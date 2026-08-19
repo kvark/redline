@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Redline — Mars Circuit</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #070304;
+        color: #e8d4c4;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      #boot {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        pointer-events: none;
+        letter-spacing: 0.08em;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot">Loading Redline…</div>
+    <script type="module">
+      import init from "./pkg/redline.js";
+      const boot = document.getElementById("boot");
+      try {
+        await init();
+        boot?.remove();
+      } catch (err) {
+        if (boot) {
+          boot.textContent = String(err);
+          boot.style.pointerEvents = "auto";
+          boot.style.padding = "2rem";
+          boot.style.whiteSpace = "pre-wrap";
+        }
+        throw err;
+      }
+    </script>
+  </body>
+</html>

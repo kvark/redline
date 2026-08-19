@@ -17,7 +17,12 @@ mod planet;
 mod race;
 mod vehicle;
 
-use std::{env, f32::consts, fs, path::PathBuf, time};
+use std::{env, f32::consts, fs, path::PathBuf};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time;
+#[cfg(target_arch = "wasm32")]
+use web_time as time;
 
 use vehicle::Isometry;
 
@@ -59,6 +64,18 @@ impl Game {
                 winit::window::Window::default_attributes().with_title("Redline — Mars Circuit"),
             )
             .unwrap();
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            use winit::platform::web::WindowExtWebSys as _;
+            let canvas = window.canvas().expect("winit canvas");
+            canvas.set_id(blade_graphics::CANVAS_ID);
+            web_sys::window()
+                .and_then(|win| win.document())
+                .and_then(|doc| doc.body())
+                .and_then(|body| body.append_child(&web_sys::Element::from(canvas)).ok())
+                .expect("couldn't append canvas to document body");
+        }
 
         let assets = assets_dir();
         let generated = assets.join("generated");
@@ -171,10 +188,9 @@ impl Game {
 
         spawn_props(&mut engine, &planet);
 
-        let veh_config: config::Vehicle = ron::de::from_bytes(
-            &fs::read(assets.join("vehicle.ron")).expect("vehicle config missing"),
-        )
-        .expect("unable to parse vehicle config");
+        let veh_config: config::Vehicle =
+            ron::de::from_bytes(&read_asset_bytes(&assets.join("vehicle.ron")))
+                .expect("unable to parse vehicle config");
         let spawn = vehicle::Vehicle::spawn_pose(&planet.track, 1.4);
         let vehicle = vehicle::spawn(&mut engine, &veh_config, spawn.clone());
 
@@ -535,6 +551,13 @@ impl winit::application::ApplicationHandler for App {
 }
 
 fn main() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        console_error_panic_hook::set_once();
+        let _ = console_log::init_with_level(log::Level::Info);
+        mount_embedded_assets();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
     let event_loop = winit::event_loop::EventLoop::new().unwrap();
     let mut app = App { game: None };
@@ -561,6 +584,29 @@ fn smoke_frame_budget() -> Option<u32> {
 
 fn assets_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")
+}
+
+fn read_asset_bytes(path: &std::path::Path) -> Vec<u8> {
+    if let Some(bytes) = blade_engine::vfs::read(path) {
+        return bytes;
+    }
+    fs::read(path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn mount_embedded_assets() {
+    use include_dir::{Dir, include_dir};
+    static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
+    fn walk(dir: &Dir, root: &std::path::Path) {
+        for file in dir.files() {
+            blade_engine::vfs::mount(root.join(file.path()), file.contents().to_vec());
+        }
+        for child in dir.dirs() {
+            walk(child, root);
+        }
+    }
+    walk(&ASSETS, &root);
 }
 
 fn relative_model(assets: &std::path::Path, model: &std::path::Path) -> String {

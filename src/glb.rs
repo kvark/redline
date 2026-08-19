@@ -1,4 +1,6 @@
-use std::{fs, io, path::Path};
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs;
+use std::{io, path::Path};
 
 /// One triangle mesh with a texture-less PBR material.
 pub struct MeshData {
@@ -50,8 +52,8 @@ fn min_max2(values: &[[f32; 2]]) -> ([f32; 2], [f32; 2]) {
     (min, max)
 }
 
-/// Write a GLB with one node per mesh. The first scene owns every node.
-pub fn write_glb(path: &Path, meshes: &[MeshData]) -> io::Result<()> {
+/// Encode a GLB with one node per mesh. The first scene owns every node.
+pub fn encode_glb(meshes: &[MeshData]) -> io::Result<Vec<u8>> {
     assert!(!meshes.is_empty(), "need at least one mesh");
 
     let mut bin = Vec::new();
@@ -221,11 +223,24 @@ pub fn write_glb(path: &Path, meshes: &[MeshData]) -> io::Result<()> {
     write_u32_le(&mut out, bin.len() as u32);
     write_u32_le(&mut out, CHUNK_BIN);
     out.extend_from_slice(&bin);
+    Ok(out)
+}
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+/// Write a GLB with one node per mesh. The first scene owns every node.
+pub fn write_glb(path: &Path, meshes: &[MeshData]) -> io::Result<()> {
+    let out = encode_glb(meshes)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        blade_engine::vfs::mount(path, out);
+        return Ok(());
     }
-    fs::write(path, out)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, out)
+    }
 }
 
 #[cfg(test)]

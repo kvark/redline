@@ -255,7 +255,7 @@ dependencies = [
 [[package]]
 name = "blade-asset"
 version = "0.2.1"
-source = "git+https://github.com/kvark/blade#20fcb84953dc216bbb7179bda6ce985693208736"
+source = "git+https://github.com/kvark/blade?branch=wasm-engine#d5c89a930aafe1b4c14d29a95fbc7667db4c279a"
 dependencies = [
  "base64",
  "bytemuck",
@@ -267,7 +267,7 @@ dependencies = [
 [[package]]
 name = "blade-egui"
 version = "0.8.1"
-source = "git+https://github.com/kvark/blade#20fcb84953dc216bbb7179bda6ce985693208736"
+source = "git+https://github.com/kvark/blade?branch=wasm-engine#d5c89a930aafe1b4c14d29a95fbc7667db4c279a"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -280,7 +280,7 @@ dependencies = [
 [[package]]
 name = "blade-engine"
 version = "0.1.0"
-source = "git+https://github.com/kvark/blade#20fcb84953dc216bbb7179bda6ce985693208736"
+source = "git+https://github.com/kvark/blade?branch=wasm-engine#d5c89a930aafe1b4c14d29a95fbc7667db4c279a"
 dependencies = [
  "base64",
  "blade-asset",
@@ -292,6 +292,7 @@ dependencies = [
  "choir",
  "colorsys",
  "egui",
+ "getrandom 0.2.17",
  "glam 0.30.10",
  "gltf",
  "log",
@@ -309,7 +310,7 @@ dependencies = [
 [[package]]
 name = "blade-graphics"
 version = "0.8.4"
-source = "git+https://github.com/kvark/blade#20fcb84953dc216bbb7179bda6ce985693208736"
+source = "git+https://github.com/kvark/blade?branch=wasm-engine#d5c89a930aafe1b4c14d29a95fbc7667db4c279a"
 dependencies = [
  "ash",
  "ash-window",
@@ -345,7 +346,7 @@ dependencies = [
 [[package]]
 name = "blade-helpers"
 version = "0.2.0"
-source = "git+https://github.com/kvark/blade#20fcb84953dc216bbb7179bda6ce985693208736"
+source = "git+https://github.com/kvark/blade?branch=wasm-engine#d5c89a930aafe1b4c14d29a95fbc7667db4c279a"
 dependencies = [
  "blade-graphics",
  "blade-render",
@@ -359,7 +360,7 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.3.0"
-source = "git+https://github.com/kvark/blade#20fcb84953dc216bbb7179bda6ce985693208736"
+source = "git+https://github.com/kvark/blade?branch=wasm-engine#d5c89a930aafe1b4c14d29a95fbc7667db4c279a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -369,7 +370,7 @@ dependencies = [
 [[package]]
 name = "blade-particle"
 version = "0.1.0"
-source = "git+https://github.com/kvark/blade#20fcb84953dc216bbb7179bda6ce985693208736"
+source = "git+https://github.com/kvark/blade?branch=wasm-engine#d5c89a930aafe1b4c14d29a95fbc7667db4c279a"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -381,7 +382,7 @@ dependencies = [
 [[package]]
 name = "blade-render"
 version = "0.5.0"
-source = "git+https://github.com/kvark/blade#20fcb84953dc216bbb7179bda6ce985693208736"
+source = "git+https://github.com/kvark/blade?branch=wasm-engine#d5c89a930aafe1b4c14d29a95fbc7667db4c279a"
 dependencies = [
  "base64",
  "bevy_mikktspace",
@@ -392,6 +393,7 @@ dependencies = [
  "bytemuck",
  "choir",
  "exr",
+ "getrandom 0.2.17",
  "glam 0.30.10",
  "gltf",
  "log",
@@ -410,7 +412,7 @@ dependencies = [
 [[package]]
 name = "blade-util"
 version = "0.4.1"
-source = "git+https://github.com/kvark/blade#20fcb84953dc216bbb7179bda6ce985693208736"
+source = "git+https://github.com/kvark/blade?branch=wasm-engine#d5c89a930aafe1b4c14d29a95fbc7667db4c279a"
 dependencies = [
  "blade-graphics",
  "bytemuck",
@@ -620,6 +622,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "console_log"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86919cef3e37b9356ccf54d4421208c17ecfda01beae61393e7ffd72916c0ef1"
+dependencies = [
+ "log",
+ "web-sys",
 ]
 
 [[package]]
@@ -1074,6 +1096,19 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
+dependencies = [
+ "cfg-if",
+ "js-sys",
+ "libc",
+ "wasi",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "getrandom"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
@@ -1361,6 +1396,25 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "include_dir"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "923d117408f1e49d914f1a379a309cffe4f18c05cf4e3d12e613a15fc81bd0dd"
+dependencies = [
+ "include_dir_macros",
+]
+
+[[package]]
+name = "include_dir_macros"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cab85a7ed0bd5f0e76d93846e0147172bed2e2d3f859bcc33a8d9699cad1a75"
+dependencies = [
+ "proc-macro2",
+ "quote",
 ]
 
 [[package]]
@@ -2541,15 +2595,22 @@ dependencies = [
  "blade-graphics",
  "blade-particle",
  "blade-render",
+ "console_error_panic_hook",
+ "console_log",
  "egui",
  "egui-winit",
  "env_logger",
+ "getrandom 0.2.17",
  "glam 0.30.10",
+ "include_dir",
  "log",
  "mint",
  "ron",
  "serde",
  "serde_json",
+ "wasm-bindgen",
+ "web-sys",
+ "web-time",
  "winit",
 ]
 
@@ -3248,6 +3309,12 @@ dependencies = [
  "same-file",
  "winapi-util",
 ]
+
+[[package]]
+name = "wasi"
+version = "0.11.1+wasi-snapshot-preview1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasip2"
