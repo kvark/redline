@@ -1,0 +1,71 @@
+(
+    body: (
+        visual: (
+            model: "models/race-future-body.glb",
+            pos: (0, -0.3, 0.1),
+            rot: (0, 180, 0),
+        ),
+        collider: (
+            density: 100.0,
+            friction: 1.4,
+            shape: Cuboid(
+                half: (0.65, 0.2, 1.2),
+            ),
+        ),
+    ),
+    wheel: (
+        visual: (
+            model: "models/wheel-racing.glb",
+        ),
+        collider: (
+            density: 100.0,
+            friction: 1.6,
+            rot: (0, 0, 90),
+            shape: Cylinder(
+                half_height: 0.1,
+                radius: 0.28,
+            ),
+        ),
+    ),
+    suspender: (
+        density: 100.0,
+        shape: Ball(
+            radius: 0.28,
+        ),
+    ),
+    drive_factor: 140.0,
+    jump_impulse: 14,
+    roll_impulse: 10,
+    body_mass: 130.0,
+    wheel_mass: 8.0,
+    axles: [
+        (
+            x_wheels: [-0.5, 0.5],
+            y: -0.1,
+            z: 0.7,
+            max_steering_angle: 30,
+            max_suspension_offset: 0.04,
+            steering: (
+                stiffness: 100000,
+                damping: 10000,
+                max_force: 1000,
+            ),
+            suspension: (
+                stiffness: 80000,
+                damping: 8000,
+                max_force: 1200,
+            ),
+        ),
+        (
+            x_wheels: [-0.5, 0.5],
+            y: -0.1,
+            z: -0.8,
+            max_suspension_offset: 0.04,
+            suspension: (
+                stiffness: 80000,
+                damping: 8000,
+                max_force: 1200,
+            ),
+        ),
+    ],
+)

@@ -1,0 +1,37 @@
+[package]
+name = "redline"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+description = "Race around a procedurally generated planet"
+
+[dependencies]
+blade-engine = { git = "https://github.com/kvark/blade" }
+blade-graphics = { git = "https://github.com/kvark/blade" }
+blade-particle = { git = "https://github.com/kvark/blade" }
+blade-render = { git = "https://github.com/kvark/blade" }
+egui = "0.34"
+egui-winit = { version = "0.34", default-features = false, features = [
+    "links",
+] }
+env_logger = "0.11"
+glam = { version = "0.30", features = ["mint"] }
+log = "0.4"
+mint = { version = "0.5", features = ["serde"] }
+ron = "0.8"
+serde = { version = "1", features = ["serde_derive"] }
+serde_json = "1"
+winit = "0.30"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(gles)'] }
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_extern_crates = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+pattern_type_mismatch = "warn"
+new_without_default = "allow"
+needless_borrowed_reference = "allow"
