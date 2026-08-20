@@ -200,7 +200,7 @@ fn place_decorations(
             continue;
         }
         let (height, _) = sample_height(dir, config, &track_dirs);
-        let rng = hash_u32(config.seed.wrapping_add(i as u32 * 747796405));
+        let rng = hash_u32(config.seed.wrapping_add((i as u32).wrapping_mul(747796405)));
         let is_crystal = (rng & 0xFF) < 80;
         let tilt = ((rng >> 8) as f32 / 16_777_215.0 - 0.5) * 0.55;
         let spin = ((rng >> 16) as f32 / 65_535.0) * consts::TAU;
@@ -249,7 +249,11 @@ fn write_stone_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
         .enumerate()
         .map(|(i, color)| {
             let path = out_dir.join(format!("stone-{i}.glb"));
-            let mesh = elongated_rock(seed.wrapping_add(i as u32 * 17), *color, false);
+            let mesh = elongated_rock(
+                seed.wrapping_add((i as u32).wrapping_mul(17)),
+                *color,
+                false,
+            );
             glb::write_glb(&path, &[mesh]).expect("stone glb");
             path
         })
@@ -267,7 +271,7 @@ fn write_crystal_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
         .enumerate()
         .map(|(i, &(color, emit))| {
             let path = out_dir.join(format!("crystal-{i}.glb"));
-            let mesh = crystal_spike(seed.wrapping_add(i as u32 * 29), color, emit);
+            let mesh = crystal_spike(seed.wrapping_add((i as u32).wrapping_mul(29)), color, emit);
             glb::write_glb(&path, &[mesh]).expect("crystal glb");
             path
         })
@@ -633,5 +637,23 @@ mod tests {
         let pole = glam::Vec3::Y;
         let dist = angular_distance_to_polyline(pole, &dirs);
         assert!(dist > 0.5);
+    }
+
+    #[test]
+    fn decorations_do_not_overflow() {
+        let cfg = config::Planet::default();
+        let track = build_track_dirs(64, cfg.track_lat_amp)
+            .into_iter()
+            .map(|normal| super::TrackSample {
+                position: normal * cfg.radius,
+                tangent: super::orthonormal(normal),
+                normal,
+            })
+            .collect::<Vec<_>>();
+        let stones = vec![std::path::PathBuf::from("stone")];
+        let crystals = vec![std::path::PathBuf::from("crystal")];
+        let placed = super::place_decorations(cfg, &track, &stones, &crystals);
+        assert!(!placed.is_empty());
+        assert!(placed.len() < cfg.decoration_count as usize);
     }
 }

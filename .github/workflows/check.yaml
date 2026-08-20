@@ -33,8 +33,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xvfb libvulkan1 mesa-vulkan-drivers
 
+      - name: Smoke debug (Xvfb + lavapipe)
+        run: xvfb-run -a cargo run -- --smoke 20
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
+          RUST_LOG: info
+          RUST_BACKTRACE: 1
+
       - name: Smoke (Xvfb + lavapipe)
         run: xvfb-run -a cargo run --release -- --smoke 20
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
           RUST_LOG: info
+
+  wasm:
+    name: Web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup Rust
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
+          rustup default 1.92.0
+
+      - name: Check WASM
+        run: cargo check --target wasm32-unknown-unknown
