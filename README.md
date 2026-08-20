@@ -23,6 +23,8 @@ REDLINE_RT=1 cargo run --release
 Headless smoke test (used by Linux CI):
 
 ```sh
+# debug — catches assertion failures that --release strips
+xvfb-run -a cargo run -- --smoke 20
 xvfb-run -a cargo run --release -- --smoke 20
 ```
 
