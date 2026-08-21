@@ -63,9 +63,9 @@ impl Default for Camera {
     fn default() -> Self {
         Self {
             azimuth: 0.0,
-            altitude: 0.35,
-            distance: 8.0,
-            height: 1.6,
+            altitude: 0.28,
+            distance: 9.0,
+            height: 2.2,
             speed: 6.0,
             fov: 1.05,
         }
