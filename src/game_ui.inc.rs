@@ -126,13 +126,17 @@ impl Game {
         self.update_time();
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
-        let egui_output = self.egui_state.egui_ctx().run(raw_input, |ctx| {
-            egui::Window::new("HUD")
-                .default_pos([12.0, 12.0])
-                .default_width(220.0)
-                .show(ctx, |ui| {
-                    self.populate_hud(ui);
-                });
+        let egui_context = self.egui_state.egui_ctx().clone();
+        let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
+            let mut frame = egui::Frame::side_top_panel(&egui_ctx.global_style());
+            let mut fill = frame.fill.to_array();
+            for channel in fill.iter_mut() {
+                *channel = (*channel as u32 * 7 / 8) as u8;
+            }
+            frame.fill = egui::Color32::from_rgba_premultiplied(fill[0], fill[1], fill[2], fill[3]);
+            egui::Panel::right("hud")
+                .frame(frame)
+                .show_inside(egui_ctx, |ui| self.populate_hud(ui));
         });
 
         self.egui_state
