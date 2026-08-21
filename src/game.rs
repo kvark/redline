@@ -77,7 +77,12 @@ impl Game {
                 data_path: assets.to_string_lossy().into_owned(),
                 cache_path: "asset-cache".to_string(),
                 time_step: 0.01,
-                ray_trace,
+                render_backend: if ray_trace {
+                    blade_engine::config::RenderBackend::RayTracer
+                } else {
+                    blade_engine::config::RenderBackend::Rasterizer
+                },
+                gui_enabled: true,
             },
         );
 
