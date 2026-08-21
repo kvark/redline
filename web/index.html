@@ -40,6 +40,13 @@
         await init();
         boot?.remove();
       } catch (err) {
+        // winit's web EventLoop::run throws after spawning the async
+        // loop so the Rust signature can stay `!`. This is intentional.
+        const msg = err && (err.message || String(err));
+        if (typeof msg === "string" && msg.startsWith("Using exceptions for control flow,")) {
+          boot?.remove();
+          return;
+        }
         if (boot) {
           boot.textContent = String(err);
           boot.style.pointerEvents = "auto";
