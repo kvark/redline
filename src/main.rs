@@ -11,6 +11,7 @@
     clippy::pattern_type_mismatch
 )]
 
+mod ai;
 mod config;
 mod game;
 mod glb;

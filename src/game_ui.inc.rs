@@ -159,6 +159,7 @@ impl Game {
             self.planet.radius
         ));
         ui.label(format!("Time  {}", format_time(self.race.time)));
+        ui.label(format!("Opponents  {}", self.ai_drivers.len()));
         if let Some(best) = self.race.best_lap {
             ui.label(format!("Best  {}", format_time(best)));
         }
