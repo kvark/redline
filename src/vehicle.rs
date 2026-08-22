@@ -275,6 +275,37 @@ impl Vehicle {
         }
     }
 
+    /// Keep the chassis aligned with the local horizon while preserving yaw and jumps.
+    /// This behaves like a low center of gravity rather than a hard orientation lock.
+    pub fn apply_stability(&self, engine: &mut blade_engine::Engine, dt: f32) {
+        let pose = self.pose(engine);
+        let radial_up = pose.position.normalize_or_zero();
+        let body_up = pose.orientation * glam::Vec3::Y;
+        if radial_up.length_squared() < 1e-6 {
+            return;
+        }
+
+        let (_, angular) = engine.get_velocity(self.body_handle);
+        let angular = glam::Vec3::from(angular);
+        let yaw = radial_up * angular.dot(radial_up);
+        let roll_pitch = angular - yaw;
+        let error_axis = body_up.cross(radial_up);
+        let upright = body_up.dot(radial_up);
+
+        // A nearly upside-down cross product has no preferred direction. Use the car's
+        // forward axis as a deterministic escape so it cannot settle on its roof.
+        let correction_axis = if error_axis.length_squared() < 1e-5 && upright < 0.0 {
+            pose.orientation * glam::Vec3::Z
+        } else {
+            error_axis
+        };
+        let strength = if upright < 0.15 { 18.0 } else { 10.0 };
+        let damping = 2.8;
+        let impulse =
+            (correction_axis * strength - roll_pitch * damping) * self.body_mass * dt.min(0.05);
+        engine.apply_angular_impulse(self.body_handle, impulse.into());
+    }
+
     fn apply_radial_impulse(
         &self,
         engine: &mut blade_engine::Engine,

@@ -89,12 +89,12 @@ impl Default for Planet {
         Self {
             radius: 80.0,
             subdivisions: 5,
-            height_amp: 4.8,
+            height_amp: 7.2,
             track_width: 14.0,
             track_lat_amp: 0.28,
             gravity: 20.0,
             seed: 0x4D415253,
-            decoration_count: 220,
+            decoration_count: 360,
         }
     }
 }

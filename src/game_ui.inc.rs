@@ -25,16 +25,16 @@ impl Game {
                 match key_code {
                     winit::keyboard::KeyCode::Escape => return Err(QuitEvent),
                     winit::keyboard::KeyCode::ArrowUp | winit::keyboard::KeyCode::KeyW => {
-                        self.throttle = if pressed { 1.0 } else { 0.0 };
+                        self.throttle_forward = pressed;
                     }
                     winit::keyboard::KeyCode::ArrowDown | winit::keyboard::KeyCode::KeyS => {
-                        self.throttle = if pressed { -0.35 } else { 0.0 };
+                        self.throttle_reverse = pressed;
                     }
                     winit::keyboard::KeyCode::ArrowLeft | winit::keyboard::KeyCode::KeyA => {
-                        self.steer = if pressed { 1.0 } else { 0.0 };
+                        self.steer_left = pressed;
                     }
                     winit::keyboard::KeyCode::ArrowRight | winit::keyboard::KeyCode::KeyD => {
-                        self.steer = if pressed { -1.0 } else { 0.0 };
+                        self.steer_right = pressed;
                     }
                     winit::keyboard::KeyCode::KeyR if pressed => {
                         self.respawn();
@@ -65,24 +65,13 @@ impl Game {
                     }
                     _ => {}
                 }
-                if pressed
-                    && matches!(
-                        key_code,
-                        winit::keyboard::KeyCode::ArrowUp
-                            | winit::keyboard::KeyCode::KeyW
-                            | winit::keyboard::KeyCode::ArrowDown
-                            | winit::keyboard::KeyCode::KeyS
-                            | winit::keyboard::KeyCode::ArrowLeft
-                            | winit::keyboard::KeyCode::KeyA
-                            | winit::keyboard::KeyCode::ArrowRight
-                            | winit::keyboard::KeyCode::KeyD
-                    )
-                {
-                    self.vehicle
-                        .set_velocity(&mut self.engine, self.throttle * 110.0);
-                    self.vehicle
-                        .set_steering(&mut self.engine, self.steer * 0.9);
-                }
+            }
+            winit::event::WindowEvent::Focused(false) => {
+                // Key-up events are not guaranteed when the player tabs away.
+                self.throttle_forward = false;
+                self.throttle_reverse = false;
+                self.steer_left = false;
+                self.steer_right = false;
             }
             winit::event::WindowEvent::CloseRequested => return Err(QuitEvent),
             winit::event::WindowEvent::RedrawRequested => {
