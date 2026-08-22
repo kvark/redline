@@ -30,8 +30,7 @@ pub struct Decoration {
     pub position: glam::Vec3,
     pub orientation: glam::Quat,
     pub scale: f32,
-    pub half_extents: glam::Vec3,
-    pub collider_offset: glam::Vec3,
+    pub collider_points: Vec<glam::Vec3>,
     pub kind: DecorationKind,
 }
 
@@ -288,26 +287,17 @@ fn place_decorations(
         } else {
             stones[i % stones.len()].clone()
         };
-        let (half, collider_offset, lift) = if is_crystal {
-            (
-                glam::Vec3::new(0.28 * scale, 0.68 * scale, 0.28 * scale),
-                glam::Vec3::Y * (0.325 * scale),
-                0.35 * scale,
-            )
+        let (collider_points, lift) = if is_crystal {
+            (crystal_collider(scale), 0.35 * scale)
         } else {
-            (
-                glam::Vec3::new(0.86 * scale, 2.05 * scale, 0.86 * scale),
-                glam::Vec3::ZERO,
-                1.85 * scale,
-            )
+            (elongated_collider(scale, 1.0), 1.85 * scale)
         };
         out.push(Decoration {
             model,
             position: dir * height + tilted * lift,
             orientation,
             scale,
-            half_extents: half,
-            collider_offset,
+            collider_points,
             kind: if is_crystal {
                 DecorationKind::Crystal
             } else {
@@ -334,19 +324,45 @@ fn place_decorations(
             let spike_up = (point_dir + inward * (0.28 + hash01(h ^ 0x27D4_EB2F) * 0.28) + along)
                 .normalize_or_zero();
             let scale = 3.8 + hash01(h ^ 0x1656_67B1) * 3.7;
-            let half = glam::Vec3::new(0.32 * scale, 2.05 * scale, 0.32 * scale);
             out.push(Decoration {
                 model: spires[(row + side_index) % spires.len()].clone(),
                 position: point_dir * height + spike_up * (scale * 1.85),
                 orientation: surface_quat(spike_up, sample.tangent),
                 scale,
-                half_extents: half,
-                collider_offset: glam::Vec3::ZERO,
+                collider_points: elongated_collider(scale, 0.34),
                 kind: DecorationKind::Stone,
             });
         }
     }
     out
+}
+
+fn elongated_collider(scale: f32, width: f32) -> Vec<glam::Vec3> {
+    let mut points = Vec::with_capacity(26);
+    points.push(glam::Vec3::Y * (1.82 * scale));
+    points.push(-glam::Vec3::Y * (1.82 * scale));
+    for (y, radius) in [(-0.82f32, 0.64f32), (0.0, 0.78), (0.82, 0.64)] {
+        for side in 0..8 {
+            let angle = side as f32 / 8.0 * consts::TAU;
+            points.push(
+                glam::Vec3::new(
+                    angle.cos() * radius * width,
+                    y,
+                    angle.sin() * radius * width,
+                ) * scale,
+            );
+        }
+    }
+    points
+}
+
+fn crystal_collider(scale: f32) -> Vec<glam::Vec3> {
+    let mut points = vec![glam::Vec3::Y * scale, -glam::Vec3::Y * (0.35 * scale)];
+    for side in 0..6 {
+        let angle = side as f32 / 6.0 * consts::TAU;
+        points.push(glam::Vec3::new(angle.cos() * 0.21, 0.12, angle.sin() * 0.21) * scale);
+    }
+    points
 }
 
 fn write_stone_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {

@@ -8,11 +8,16 @@
         collider: (
             density: 100.0,
             friction: 1.4,
-            // Keep the chassis clear of convex hill crests and track shoulders.
-            pos: (0, 0.05, 0),
-            shape: Cuboid(
-                // Fit between the tires so wheel/body self-collision filtering is unnecessary.
-                half: (0.36, 0.14, 1.04),
+            shape: ConvexHull(
+                border_radius: 0.06,
+                points: [
+                    (-0.56, -0.34, -0.68), (0.56, -0.34, -0.68),
+                    (-0.56, -0.34, 0.68), (0.56, -0.34, 0.68),
+                    (-0.52, -0.18, -1.06), (0.52, -0.18, -1.06),
+                    (-0.52, -0.18, 1.06), (0.52, -0.18, 1.06),
+                    (-0.50, 0.10, -0.82), (0.50, 0.10, -0.82),
+                    (-0.50, 0.10, 0.82), (0.50, 0.10, 0.82),
+                ],
             ),
         ),
     ),
@@ -20,54 +25,21 @@
         visual: (
             model: "models/wheel-racing.glb",
         ),
-        collider: (
-            density: 100.0,
-            friction: 1.35,
-            shape: Ball(
-                radius: 0.28,
-            ),
-        ),
     ),
-    suspender: (
-        density: 100.0,
-        shape: Ball(
-            radius: 0.28,
-        ),
-    ),
-    drive_factor: 140.0,
     jump_impulse: 14,
     roll_impulse: 10,
     body_mass: 130.0,
-    wheel_mass: 8.0,
     axles: [
         (
             x_wheels: [-0.5, 0.5],
             y: -0.1,
             z: 0.7,
             max_steering_angle: 30,
-            max_suspension_offset: 0.12,
-            steering: (
-                stiffness: 180000,
-                damping: 20000,
-                max_force: 3600,
-            ),
-            suspension: (
-                stiffness: 55000,
-                damping: 8500,
-                max_force: 3200,
-            ),
         ),
         (
             x_wheels: [-0.5, 0.5],
             y: -0.1,
             z: -0.8,
-            driven: true,
-            max_suspension_offset: 0.12,
-            suspension: (
-                stiffness: 55000,
-                damping: 8500,
-                max_force: 3200,
-            ),
         ),
     ],
 )

@@ -5,6 +5,7 @@ use std::time;
 #[cfg(target_arch = "wasm32")]
 use web_time as time;
 
+use crate::ai;
 use crate::config;
 use crate::planet;
 use crate::race;
@@ -21,6 +22,7 @@ pub struct Game {
     egui_state: egui_winit::State,
     egui_viewport_id: egui::ViewportId,
     vehicle: vehicle::Vehicle,
+    ai_drivers: Vec<ai::Driver>,
     cam_config: config::Camera,
     planet: planet::GeneratedPlanet,
     planet_cfg: config::Planet,
@@ -153,10 +155,15 @@ impl Game {
                     } else {
                         0.05
                     },
-                    shape: blade_engine::config::Shape::Cuboid {
-                        half: deco.half_extents.into(),
+                    shape: blade_engine::config::Shape::ConvexHull {
+                        points: deco
+                            .collider_points
+                            .iter()
+                            .map(|point| (*point).into())
+                            .collect(),
+                        border_radius: 0.025,
                     },
-                    pos: deco.collider_offset.into(),
+                    pos: [0.0; 3].into(),
                     rot: [0.0; 3].into(),
                 }],
                 additional_mass: None,
@@ -178,6 +185,24 @@ impl Game {
                 .expect("unable to parse vehicle config");
         let spawn = vehicle::Vehicle::spawn_pose(&planet.track, 1.4);
         let vehicle = vehicle::spawn(&mut engine, &veh_config, spawn.clone());
+        let ai_drivers = [
+            (8, -2.1, 15.5, [0.95, 0.32, 0.22, 1.0]),
+            (13, 2.0, 14.5, [0.24, 0.72, 0.95, 1.0]),
+            (18, -0.6, 16.5, [0.82, 0.78, 0.22, 1.0]),
+        ]
+        .into_iter()
+        .map(|(index, lane, speed, tint)| {
+            ai::Driver::spawn(
+                &mut engine,
+                &veh_config,
+                &planet.track,
+                index,
+                lane,
+                speed,
+                tint,
+            )
+        })
+        .collect();
 
         let dust = engine.create_particle_system(
             "dust",
@@ -219,6 +244,7 @@ impl Game {
             egui_state,
             egui_viewport_id,
             vehicle,
+            ai_drivers,
             cam_config: config::Camera::default(),
             planet,
             planet_cfg,
@@ -247,7 +273,19 @@ impl Game {
             .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
         self.vehicle
             .apply_stability(&mut self.engine, dt, self.steer);
+        for driver in self.ai_drivers.iter_mut() {
+            driver.update(
+                &mut self.engine,
+                &self.planet.track,
+                self.planet_cfg.gravity,
+                dt,
+            );
+        }
         self.engine.update(dt);
+        self.vehicle.sync_wheels(&mut self.engine);
+        for driver in self.ai_drivers.iter() {
+            driver.vehicle.sync_wheels(&mut self.engine);
+        }
         let pose = self.vehicle.pose(&self.engine);
         self.race.update(pose.position, dt);
         self.emit_dust(&pose, dt);
@@ -290,10 +328,12 @@ impl Game {
         let (linear, _) = self.engine.get_velocity(self.vehicle.body_handle);
         let speed = glam::Vec3::from(linear).length();
         let steering_limit = 0.52 * (1.0 / (1.0 + speed / 48.0)).clamp(0.42, 1.0);
-        self.vehicle
-            .set_velocity(&mut self.engine, self.throttle * 110.0);
-        self.vehicle
-            .set_steering(&mut self.engine, self.steer * steering_limit);
+        self.vehicle.drive(
+            &mut self.engine,
+            self.throttle * 30.0,
+            self.steer * steering_limit,
+            dt,
+        );
     }
 }
 
