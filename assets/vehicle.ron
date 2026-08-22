@@ -11,7 +11,8 @@
             // Keep the chassis clear of convex hill crests and track shoulders.
             pos: (0, 0.05, 0),
             shape: Cuboid(
-                half: (0.64, 0.14, 1.04),
+                // Fit between the tires so wheel/body self-collision filtering is unnecessary.
+                half: (0.36, 0.14, 1.04),
             ),
         ),
     ),
@@ -21,10 +22,8 @@
         ),
         collider: (
             density: 100.0,
-            friction: 1.6,
-            rot: (0, 0, 90),
-            shape: Cylinder(
-                half_height: 0.1,
+            friction: 1.35,
+            shape: Ball(
                 radius: 0.28,
             ),
         ),
@@ -62,6 +61,7 @@
             x_wheels: [-0.5, 0.5],
             y: -0.1,
             z: -0.8,
+            driven: true,
             max_suspension_offset: 0.12,
             suspension: (
                 stiffness: 55000,

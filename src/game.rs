@@ -93,11 +93,7 @@ impl Game {
         engine.set_average_luminosity(0.18);
         engine.set_raster_config(blade_render::RasterConfig {
             clear_color: blade_graphics::TextureColor::OpaqueBlack,
-            light_dir: mint::Vector3 {
-                x: 0.45,
-                y: 0.72,
-                z: 0.28,
-            },
+            light_dir: planet::SUN_DIRECTION.into(),
             light_color: mint::Vector3 {
                 x: 4.2,
                 y: 3.1,
@@ -140,7 +136,6 @@ impl Game {
             blade_engine::Transform::default(),
             blade_engine::DynamicInput::Empty,
         );
-
         for (index, deco) in planet.decorations.iter().enumerate() {
             let model = relative_model(&assets, &deco.model);
             let object = blade_engine::config::Object {
@@ -161,7 +156,7 @@ impl Game {
                     shape: blade_engine::config::Shape::Cuboid {
                         half: deco.half_extents.into(),
                     },
-                    pos: [0.0; 3].into(),
+                    pos: deco.collider_offset.into(),
                     rot: [0.0; 3].into(),
                 }],
                 additional_mass: None,
@@ -250,7 +245,8 @@ impl Game {
         self.update_vehicle_controls(dt);
         self.vehicle
             .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
-        self.vehicle.apply_stability(&mut self.engine, dt);
+        self.vehicle
+            .apply_stability(&mut self.engine, dt, self.steer);
         self.engine.update(dt);
         let pose = self.vehicle.pose(&self.engine);
         self.race.update(pose.position, dt);
@@ -366,7 +362,17 @@ fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlan
             scale: 1.6,
             ..Default::default()
         }],
-        colliders: vec![],
+        colliders: vec![blade_engine::config::Collider {
+            density: 1.0,
+            friction: 0.8,
+            restitution: 0.05,
+            shape: blade_engine::config::Shape::Cuboid {
+                half: [0.10, 0.11, 0.10].into(),
+            },
+            // Bounds of the scaled GLB, including its authored node translation.
+            pos: [-0.56, 0.09, -1.04].into(),
+            rot: [0.0; 3].into(),
+        }],
         additional_mass: None,
     };
     let stride = (planet.track.len() / 14).max(1);
@@ -447,8 +453,11 @@ fn starfield(width: u32, height: u32) -> Vec<[u8; 4]> {
     }
 
     // A distant, small sun with a restrained one-pixel corona.
-    let sun_x = width * 3 / 4;
-    let sun_y = height / 3;
+    let sun = planet::SUN_DIRECTION.normalize();
+    let sun_u = (sun.x.atan2(sun.z) / consts::PI + 1.0) * 0.5;
+    let sun_v = sun.y.asin() / consts::PI + 0.5;
+    let sun_x = (sun_u * width as f32) as u32 % width;
+    let sun_y = (sun_v * height as f32) as u32 % height;
     pixels[(sun_y * width + sun_x) as usize] = [255, 236, 205, 255];
     for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
         let x = (sun_x as i32 + dx) as u32;
