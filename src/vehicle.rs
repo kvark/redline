@@ -6,6 +6,7 @@ use crate::{config, planet};
 pub struct Wheel {
     pub object: blade_engine::ObjectHandle,
     pub spin_joint: blade_engine::JointHandle,
+    pub driven: bool,
     pub suspender: Option<blade_engine::ObjectHandle>,
     pub steer_joint: Option<blade_engine::JointHandle>,
 }
@@ -122,10 +123,10 @@ pub fn spawn(
             let wheel_angular_freedoms = mint::Vector3 {
                 x: Some(blade_engine::FreedomAxis {
                     limits: None,
-                    motor: Some(blade_engine::config::Motor {
+                    motor: axle.driven.then_some(blade_engine::config::Motor {
                         stiffness: 0.0,
                         damping: veh_config.drive_factor,
-                        max_force: 1400.0,
+                        max_force: 1800.0,
                     }),
                 }),
                 y: None,
@@ -193,19 +194,10 @@ pub fn spawn(
                         },
                     );
 
-                    let _extra_joint = engine.add_joint(
-                        vehicle.body_handle,
-                        wheel_handle,
-                        blade_engine::JointDesc {
-                            linear: blade_engine::FreedomAxis::ALL_FREE,
-                            angular: blade_engine::FreedomAxis::ALL_FREE,
-                            ..Default::default()
-                        },
-                    );
-
                     Wheel {
                         object: wheel_handle,
                         spin_joint: wheel_joint,
+                        driven: axle.driven,
                         suspender: Some(suspender_handle),
                         steer_joint: if axle.max_steering_angle > 0.0 {
                             Some(suspension_joint)
@@ -233,6 +225,7 @@ pub fn spawn(
                     Wheel {
                         object: wheel_handle,
                         spin_joint: wheel_joint,
+                        driven: axle.driven,
                         suspender: None,
                         steer_joint: None,
                     }
@@ -248,12 +241,14 @@ impl Vehicle {
     pub fn set_velocity(&self, engine: &mut blade_engine::Engine, velocity: f32) {
         engine.wake_up(self.body_handle);
         for wheel in self.wheels.iter() {
-            engine.set_joint_motor(
-                wheel.spin_joint,
-                blade_engine::JointAxis::AngularX,
-                0.0,
-                velocity,
-            );
+            if wheel.driven {
+                engine.set_joint_motor(
+                    wheel.spin_joint,
+                    blade_engine::JointAxis::AngularX,
+                    0.0,
+                    velocity,
+                );
+            }
         }
     }
 
@@ -277,7 +272,7 @@ impl Vehicle {
 
     /// Keep the chassis aligned with the local horizon while preserving yaw and jumps.
     /// This behaves like a low center of gravity rather than a hard orientation lock.
-    pub fn apply_stability(&self, engine: &mut blade_engine::Engine, dt: f32) {
+    pub fn apply_stability(&self, engine: &mut blade_engine::Engine, dt: f32, steering: f32) {
         let pose = self.pose(engine);
         let radial_up = pose.position.normalize_or_zero();
         let body_up = pose.orientation * glam::Vec3::Y;
@@ -285,7 +280,8 @@ impl Vehicle {
             return;
         }
 
-        let (_, angular) = engine.get_velocity(self.body_handle);
+        let (linear, angular) = engine.get_velocity(self.body_handle);
+        let linear = glam::Vec3::from(linear);
         let angular = glam::Vec3::from(angular);
         let yaw = radial_up * angular.dot(radial_up);
         let roll_pitch = angular - yaw;
@@ -304,6 +300,24 @@ impl Vehicle {
         let impulse =
             (correction_axis * strength - roll_pitch * damping) * self.body_mass * dt.min(0.05);
         engine.apply_angular_impulse(self.body_handle, impulse.into());
+
+        // Rapier contact friction does not distinguish tire rolling and lateral directions.
+        // Remove lateral scrub explicitly and damp local yaw only while steering is centered.
+        // This lets the car hold a heading without fighting intentional cornering.
+        let forward = (pose.orientation * glam::Vec3::Z).reject_from(radial_up);
+        if forward.length_squared() > 1e-5 {
+            let right = radial_up.cross(forward.normalize()).normalize_or_zero();
+            let lateral_speed = linear.dot(right);
+            let grip = if steering.abs() < 0.05 { 7.0 } else { 3.0 };
+            let lateral_impulse = -right * lateral_speed * self.body_mass * grip * dt.min(0.05);
+            engine.apply_linear_impulse(self.body_handle, lateral_impulse.into());
+
+            let center_weight = (1.0 - steering.abs()).clamp(0.0, 1.0).powi(2);
+            let yaw_rate = angular.dot(radial_up);
+            let yaw_impulse =
+                -radial_up * yaw_rate * self.body_mass * 0.9 * center_weight * dt.min(0.05);
+            engine.apply_angular_impulse(self.body_handle, yaw_impulse.into());
+        }
     }
 
     fn apply_radial_impulse(

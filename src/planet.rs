@@ -7,6 +7,7 @@ use std::{
 use crate::{config, glb};
 
 const GOLDEN_ANGLE: f32 = 2.399_963_2;
+pub const SUN_DIRECTION: glam::Vec3 = glam::Vec3::new(0.45, 0.72, 0.28);
 
 #[derive(Clone, Copy)]
 pub struct TrackSample {
@@ -30,6 +31,7 @@ pub struct Decoration {
     pub orientation: glam::Quat,
     pub scale: f32,
     pub half_extents: glam::Vec3,
+    pub collider_offset: glam::Vec3,
     pub kind: DecorationKind,
 }
 
@@ -112,7 +114,6 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
         &spire_models,
         &crystal_models,
     );
-
     GeneratedPlanet {
         radius: config.radius,
         track_width: config.track_width,
@@ -287,17 +288,26 @@ fn place_decorations(
         } else {
             stones[i % stones.len()].clone()
         };
-        let half = if is_crystal {
-            glam::Vec3::new(0.18 * scale, 0.55 * scale, 0.18 * scale)
+        let (half, collider_offset, lift) = if is_crystal {
+            (
+                glam::Vec3::new(0.28 * scale, 0.68 * scale, 0.28 * scale),
+                glam::Vec3::Y * (0.325 * scale),
+                0.35 * scale,
+            )
         } else {
-            glam::Vec3::new(0.28 * scale, 0.48 * scale, 0.24 * scale)
+            (
+                glam::Vec3::new(0.86 * scale, 2.05 * scale, 0.86 * scale),
+                glam::Vec3::ZERO,
+                1.85 * scale,
+            )
         };
         out.push(Decoration {
             model,
-            position: dir * (height + half.y * 0.35),
+            position: dir * height + tilted * lift,
             orientation,
             scale,
             half_extents: half,
+            collider_offset,
             kind: if is_crystal {
                 DecorationKind::Crystal
             } else {
@@ -324,13 +334,14 @@ fn place_decorations(
             let spike_up = (point_dir + inward * (0.28 + hash01(h ^ 0x27D4_EB2F) * 0.28) + along)
                 .normalize_or_zero();
             let scale = 3.8 + hash01(h ^ 0x1656_67B1) * 3.7;
-            let half = glam::Vec3::new(0.13 * scale, 0.66 * scale, 0.13 * scale);
+            let half = glam::Vec3::new(0.32 * scale, 2.05 * scale, 0.32 * scale);
             out.push(Decoration {
                 model: spires[(row + side_index) % spires.len()].clone(),
-                position: point_dir * height + spike_up * (scale * 0.35),
+                position: point_dir * height + spike_up * (scale * 1.85),
                 orientation: surface_quat(spike_up, sample.tangent),
                 scale,
                 half_extents: half,
+                collider_offset: glam::Vec3::ZERO,
                 kind: DecorationKind::Stone,
             });
         }

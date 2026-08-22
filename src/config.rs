@@ -18,6 +18,9 @@ pub struct Axle {
     pub y: f32,
     /// Forward offset from the body.
     pub z: f32,
+    /// Whether this axle receives engine torque.
+    #[serde(default)]
+    pub driven: bool,
     #[serde(default)]
     pub max_steering_angle: f32,
     #[serde(default)]
