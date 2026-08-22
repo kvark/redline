@@ -45,44 +45,73 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
     let track_dirs = build_track_dirs(256, config.track_lat_amp);
 
     let mut displaced = Vec::with_capacity(positions.len());
-    let mut on_track = Vec::with_capacity(positions.len());
+    let mut track_weights = Vec::with_capacity(positions.len());
     for dir in positions.iter().copied() {
         let (height, track_weight) = sample_height(dir, config, &track_dirs);
         displaced.push(dir * height);
-        on_track.push(track_weight > 0.45);
+        track_weights.push(track_weight);
     }
 
-    let mut terrain = MeshBuilder::new("mars-terrain");
+    let mut dust = MeshBuilder::new("ochre-dust");
+    let mut lowlands = MeshBuilder::new("shadowed-lowlands");
+    let mut basalt = MeshBuilder::new("basalt-highlands");
+    let mut iron = MeshBuilder::new("iron-outcrops");
     let mut track_mesh = MeshBuilder::new("mars-track");
     for face in faces.iter() {
         let a = displaced[face[0] as usize];
         let b = displaced[face[1] as usize];
         let c = displaced[face[2] as usize];
-        let trackish = on_track[face[0] as usize] as u8
-            + on_track[face[1] as usize] as u8
-            + on_track[face[2] as usize] as u8
+        let trackish = (track_weights[face[0] as usize] > 0.45) as u8
+            + (track_weights[face[1] as usize] > 0.45) as u8
+            + (track_weights[face[2] as usize] > 0.45) as u8
             >= 2;
         if trackish {
             track_mesh.push_triangle(a, b, c, config.radius);
         } else {
-            terrain.push_triangle(a, b, c, config.radius);
+            let center = (a + b + c) / 3.0;
+            let relative_height = (center.length() - config.radius) / config.height_amp;
+            let material_noise = fbm(
+                center.normalize_or_zero() * 10.0 + seed_offset(config.seed ^ 0x51A7),
+                3,
+            );
+            if relative_height < -0.16 {
+                lowlands.push_triangle(a, b, c, config.radius);
+            } else if relative_height > 0.48 {
+                basalt.push_triangle(a, b, c, config.radius);
+            } else if material_noise > 0.68 {
+                iron.push_triangle(a, b, c, config.radius);
+            } else {
+                dust.push_triangle(a, b, c, config.radius);
+            }
         }
     }
 
     let planet_model = out_dir.join("mars.glb");
-    glb::write_glb(
-        &planet_model,
-        &[
-            terrain.finish([0.62, 0.30, 0.17, 1.0], 0.02, 0.92, [0.0; 3]),
-            track_mesh.finish([0.38, 0.18, 0.11, 1.0], 0.0, 0.78, [0.0; 3]),
-        ],
-    )
-    .expect("failed to write planet glb");
+    let mut surface_meshes = Vec::new();
+    for (mesh, look) in [
+        (dust, ([0.43, 0.19, 0.10, 1.0], 0.0, 0.96)),
+        (lowlands, ([0.15, 0.075, 0.065, 1.0], 0.02, 0.98)),
+        (basalt, ([0.095, 0.085, 0.09, 1.0], 0.06, 0.88)),
+        (iron, ([0.31, 0.105, 0.055, 1.0], 0.12, 0.74)),
+        (track_mesh, ([0.27, 0.12, 0.075, 1.0], 0.0, 0.82)),
+    ] {
+        if !mesh.is_empty() {
+            surface_meshes.push(mesh.finish(look.0, look.1, look.2, [0.0; 3]));
+        }
+    }
+    glb::write_glb(&planet_model, &surface_meshes).expect("failed to write planet glb");
 
     let stone_models = write_stone_models(out_dir, config.seed);
+    let spire_models = write_spire_models(out_dir, config.seed);
     let crystal_models = write_crystal_models(out_dir, config.seed);
     let track = sample_track_surface(&track_dirs, config);
-    let decorations = place_decorations(config, &track, &stone_models, &crystal_models);
+    let decorations = place_decorations(
+        config,
+        &track,
+        &stone_models,
+        &spire_models,
+        &crystal_models,
+    );
 
     GeneratedPlanet {
         radius: config.radius,
@@ -135,16 +164,56 @@ fn sample_track_surface(dirs: &[glam::Vec3], config: config::Planet) -> Vec<Trac
 }
 
 fn sample_height(dir: glam::Vec3, config: config::Planet, track: &[glam::Vec3]) -> (f32, f32) {
-    let n1 = fbm(dir * 3.1 + seed_offset(config.seed), 5);
-    let n2 = fbm(dir * 7.4 + seed_offset(config.seed ^ 0x9E37), 4);
-    let ridges = 1.0 - (n1 * 2.0 - 1.0).abs();
-    let raw = config.radius + config.height_amp * (0.55 * n1 + 0.30 * n2 + 0.25 * ridges * ridges);
+    let continental = fbm(dir * 1.65 + seed_offset(config.seed), 5);
+    let broad = fbm(dir * 1.10 + seed_offset(config.seed ^ 0x7137_1A11), 3);
+    let rolling = fbm(dir * 4.8 + seed_offset(config.seed ^ 0x9E37), 4);
+    let detail = fbm(dir * 13.0 + seed_offset(config.seed ^ 0xC0FF_EE11), 3);
+    let ridges = 1.0 - (rolling * 2.0 - 1.0).abs();
+    let mesa = smoothstep(0.58, 0.76, continental) * (0.35 + 0.65 * rolling);
+    let craters = crater_relief(dir, config.seed);
+    let raw = config.radius
+        + config.height_amp
+            * (1.15 * (continental - 0.48)
+                + 0.42 * (rolling - 0.5)
+                + 0.30 * (detail - 0.5)
+                + 0.44 * ridges.powi(4)
+                + 0.52 * mesa
+                + craters);
     let dist = angular_distance_to_polyline(dir, track) * config.radius;
     let half = config.track_width * 0.5;
-    let track_weight = 1.0 - smoothstep(half * 0.55, half, dist);
-    let track_height = config.radius + config.height_amp * 0.08;
+    let track_weight = 1.0 - smoothstep(half * 0.62, half * 1.08, dist);
+    // The road follows the planet's broad geology but filters out wheel-catching detail.
+    let track_height = config.radius + config.height_amp * (0.68 * (broad - 0.48) + 0.10);
     let height = lerp(raw, track_height, track_weight);
     (height, track_weight)
+}
+
+fn crater_relief(dir: glam::Vec3, seed: u32) -> f32 {
+    let mut relief = 0.0f32;
+    for i in 0..18u32 {
+        let h0 = hash_u32(seed ^ i.wrapping_mul(0x9E37_79B9));
+        let h1 = hash_u32(h0 ^ 0x85EB_CA6B);
+        let y = hash01(h0) * 2.0 - 1.0;
+        let radial = (1.0 - y * y).max(0.0).sqrt();
+        let azimuth = hash01(h1) * consts::TAU;
+        let center = glam::Vec3::new(radial * azimuth.cos(), y, radial * azimuth.sin());
+        let radius = 0.045 + 0.075 * hash01(h1 ^ 0xC2B2_AE35);
+        let d = angular_distance(dir, center) / radius;
+        let scale = 0.45 + 0.55 * hash01(h0 ^ 0x27D4_EB2F);
+        let bowl = if d < 1.0 {
+            -0.72 * (1.0 - d * d).powi(2)
+        } else {
+            0.0
+        };
+        let rim_distance = (d - 1.0).abs();
+        let rim = if rim_distance < 0.28 {
+            0.34 * (1.0 - rim_distance / 0.28).powi(2)
+        } else {
+            0.0
+        };
+        relief += (bowl + rim) * scale;
+    }
+    relief
 }
 
 fn angular_distance_to_polyline(dir: glam::Vec3, track: &[glam::Vec3]) -> f32 {
@@ -184,6 +253,7 @@ fn place_decorations(
     config: config::Planet,
     track: &[TrackSample],
     stones: &[PathBuf],
+    spires: &[PathBuf],
     crystals: &[PathBuf],
 ) -> Vec<Decoration> {
     let track_dirs: Vec<glam::Vec3> = track.iter().map(|s| s.normal).collect();
@@ -201,13 +271,13 @@ fn place_decorations(
         }
         let (height, _) = sample_height(dir, config, &track_dirs);
         let rng = hash_u32(config.seed.wrapping_add((i as u32).wrapping_mul(747796405)));
-        let is_crystal = (rng & 0xFF) < 80;
+        let is_crystal = (rng & 0xFF) < 38;
         let tilt = ((rng >> 8) as f32 / 16_777_215.0 - 0.5) * 0.55;
         let spin = ((rng >> 16) as f32 / 65_535.0) * consts::TAU;
         let scale = if is_crystal {
-            2.4 + ((rng >> 4) & 0xFF) as f32 / 255.0 * 6.5
+            3.5 + ((rng >> 4) & 0xFF) as f32 / 255.0 * 9.0
         } else {
-            1.8 + ((rng >> 4) & 0xFF) as f32 / 255.0 * 5.2
+            1.6 + ((rng >> 4) & 0xFF) as f32 / 255.0 * 7.5
         };
         let tangent = orthonormal(dir);
         let tilted = (dir + tangent * tilt).normalize();
@@ -235,14 +305,44 @@ fn place_decorations(
             },
         });
     }
+
+    // Deliberate rows of narrow monoliths give the road a threatening silhouette.
+    // Each one remains outside the driving line but leans upward and slightly inward.
+    for (row, sample) in track.iter().step_by(8).enumerate() {
+        let side = sample.normal.cross(sample.tangent).normalize_or_zero();
+        for (side_index, sign) in [-1.0f32, 1.0].into_iter().enumerate() {
+            let h = hash_u32(
+                config.seed
+                    ^ (row as u32).wrapping_mul(0x9E37_79B9)
+                    ^ (side_index as u32).wrapping_mul(0x85EB_CA6B),
+            );
+            let offset = config.track_width * 0.5 + 4.0 + hash01(h) * 3.5;
+            let point_dir = (sample.position + side * sign * offset).normalize_or_zero();
+            let (height, _) = sample_height(point_dir, config, &track_dirs);
+            let inward = -side * sign;
+            let along = sample.tangent * (hash01(h ^ 0xC2B2_AE35) - 0.5) * 0.22;
+            let spike_up = (point_dir + inward * (0.28 + hash01(h ^ 0x27D4_EB2F) * 0.28) + along)
+                .normalize_or_zero();
+            let scale = 3.8 + hash01(h ^ 0x1656_67B1) * 3.7;
+            let half = glam::Vec3::new(0.13 * scale, 0.66 * scale, 0.13 * scale);
+            out.push(Decoration {
+                model: spires[(row + side_index) % spires.len()].clone(),
+                position: point_dir * height + spike_up * (scale * 0.35),
+                orientation: surface_quat(spike_up, sample.tangent),
+                scale,
+                half_extents: half,
+                kind: DecorationKind::Stone,
+            });
+        }
+    }
     out
 }
 
 fn write_stone_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
     let colors = [
-        [0.32, 0.18, 0.13, 1.0],
-        [0.24, 0.14, 0.11, 1.0],
-        [0.40, 0.22, 0.14, 1.0],
+        [0.18, 0.12, 0.11, 1.0],
+        [0.095, 0.085, 0.09, 1.0],
+        [0.28, 0.12, 0.075, 1.0],
     ];
     colors
         .iter()
@@ -253,6 +353,7 @@ fn write_stone_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
                 seed.wrapping_add((i as u32).wrapping_mul(17)),
                 *color,
                 false,
+                1.0,
             );
             glb::write_glb(&path, &[mesh]).expect("stone glb");
             path
@@ -260,11 +361,34 @@ fn write_stone_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
         .collect()
 }
 
+fn write_spire_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
+    let colors = [
+        [0.105, 0.085, 0.082, 1.0],
+        [0.16, 0.075, 0.055, 1.0],
+        [0.075, 0.072, 0.078, 1.0],
+    ];
+    colors
+        .iter()
+        .enumerate()
+        .map(|(i, color)| {
+            let path = out_dir.join(format!("spire-{i}.glb"));
+            let mesh = elongated_rock(
+                seed.wrapping_add(0x5A11).wrapping_add((i as u32) * 43),
+                *color,
+                false,
+                0.34,
+            );
+            glb::write_glb(&path, &[mesh]).expect("spire glb");
+            path
+        })
+        .collect()
+}
+
 fn write_crystal_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
     let looks = [
-        ([0.35, 0.75, 0.95, 1.0], [0.08, 0.35, 0.55]),
-        ([0.78, 0.28, 0.95, 1.0], [0.35, 0.08, 0.45]),
-        ([0.95, 0.82, 0.35, 1.0], [0.40, 0.22, 0.04]),
+        ([0.16, 0.36, 0.42, 1.0], [0.025, 0.16, 0.20]),
+        ([0.44, 0.055, 0.035, 1.0], [0.32, 0.018, 0.008]),
+        ([0.22, 0.34, 0.12, 1.0], [0.08, 0.18, 0.025]),
     ];
     looks
         .iter()
@@ -278,7 +402,7 @@ fn write_crystal_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
         .collect()
 }
 
-fn elongated_rock(seed: u32, color: [f32; 4], crystal: bool) -> glb::MeshData {
+fn elongated_rock(seed: u32, color: [f32; 4], crystal: bool, width: f32) -> glb::MeshData {
     let (verts, faces) = icosphere(1);
     let stretch = if crystal { 2.6 } else { 2.1 };
     let mut builder = MeshBuilder::new("rock");
@@ -288,6 +412,8 @@ fn elongated_rock(seed: u32, color: [f32; 4], crystal: bool) -> glb::MeshData {
         for (k, index) in face.iter().copied().enumerate() {
             let mut p = verts[index as usize];
             p.y *= stretch;
+            p.x *= width;
+            p.z *= width;
             let warp = fbm(p * 2.4 + jitter, 3);
             p *= 0.55 + 0.45 * warp;
             p.y *= 1.15;
@@ -374,6 +500,10 @@ impl MeshBuilder {
         self.positions.push(b.into());
         self.positions.push(c.into());
         self.indices.extend_from_slice(&[base, base + 1, base + 2]);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.indices.is_empty()
     }
 
     fn finish(
@@ -640,6 +770,45 @@ mod tests {
     }
 
     #[test]
+    fn terrain_and_track_have_broad_elevation_changes() {
+        let cfg = config::Planet::default();
+        let track = build_track_dirs(256, cfg.track_lat_amp);
+        let track_heights = track
+            .iter()
+            .map(|&dir| sample_height(dir, cfg, &track).0)
+            .collect::<Vec<_>>();
+        let track_range = track_heights.iter().copied().fold(f32::MIN, f32::max)
+            - track_heights.iter().copied().fold(f32::MAX, f32::min);
+        assert!(track_range > 1.0, "track should climb and descend");
+        let max_step = track_heights
+            .iter()
+            .zip(track_heights.iter().cycle().skip(1))
+            .take(track_heights.len())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_step < 0.8,
+            "track elevation changed {max_step:.2}m between adjacent samples"
+        );
+
+        let terrain_heights = (0..256)
+            .map(|i| {
+                let y = 1.0 - (i as f32 + 0.5) / 256.0 * 2.0;
+                let radial = (1.0 - y * y).sqrt();
+                let theta = super::GOLDEN_ANGLE * i as f32;
+                let dir = glam::Vec3::new(theta.cos() * radial, y, theta.sin() * radial);
+                sample_height(dir, cfg, &track).0
+            })
+            .collect::<Vec<_>>();
+        let terrain_range = terrain_heights.iter().copied().fold(f32::MIN, f32::max)
+            - terrain_heights.iter().copied().fold(f32::MAX, f32::min);
+        assert!(
+            terrain_range > cfg.height_amp,
+            "terrain relief was only {terrain_range:.2}m"
+        );
+    }
+
+    #[test]
     fn decorations_do_not_overflow() {
         let cfg = config::Planet::default();
         let track = build_track_dirs(64, cfg.track_lat_amp)
@@ -652,8 +821,20 @@ mod tests {
             .collect::<Vec<_>>();
         let stones = vec![std::path::PathBuf::from("stone")];
         let crystals = vec![std::path::PathBuf::from("crystal")];
-        let placed = super::place_decorations(cfg, &track, &stones, &crystals);
+        let spires = vec![std::path::PathBuf::from("spire")];
+        let placed = super::place_decorations(cfg, &track, &stones, &spires, &crystals);
         assert!(!placed.is_empty());
-        assert!(placed.len() < cfg.decoration_count as usize);
+        assert!(placed.len() < cfg.decoration_count as usize + track.len());
+        let placed_spires = placed
+            .iter()
+            .filter(|deco| deco.model == spires[0])
+            .collect::<Vec<_>>();
+        assert_eq!(placed_spires.len(), 2 * track.len().div_ceil(8));
+        for spire in placed_spires {
+            let up = spire.orientation * glam::Vec3::Y;
+            let radial = spire.position.normalize_or_zero();
+            let upward_lean = up.dot(radial);
+            assert!(upward_lean > 0.75 && upward_lean < 0.99);
+        }
     }
 }

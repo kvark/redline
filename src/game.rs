@@ -28,6 +28,10 @@ pub struct Game {
     spawn: Isometry,
     throttle: f32,
     steer: f32,
+    throttle_forward: bool,
+    throttle_reverse: bool,
+    steer_left: bool,
+    steer_right: bool,
     dust: usize,
     smoke_frames_left: Option<u32>,
     /// Frame counter for the camera / vehicle state-trace journal.
@@ -106,7 +110,9 @@ impl Game {
             },
             space_sky: true,
         });
-        engine.create_environment_map("mars-sky", 256, 128, &starfield(256, 128));
+        // A higher resolution environment keeps individual stars point-like instead of
+        // turning every texel into a large square on the sky dome.
+        engine.create_environment_map("mars-sky", 1024, 512, &starfield(1024, 512));
 
         let planet_rel = relative_model(&assets, &planet.planet_model);
         let planet_object = blade_engine::config::Object {
@@ -225,6 +231,10 @@ impl Game {
             spawn,
             throttle: 0.0,
             steer: 0.0,
+            throttle_forward: false,
+            throttle_reverse: false,
+            steer_left: false,
+            steer_right: false,
             dust,
             smoke_frames_left: smoke_frame_budget(),
             frame_index: 0,
@@ -237,8 +247,10 @@ impl Game {
         if self.is_paused {
             return;
         }
+        self.update_vehicle_controls(dt);
         self.vehicle
             .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
+        self.vehicle.apply_stability(&mut self.engine, dt);
         self.engine.update(dt);
         let pose = self.vehicle.pose(&self.engine);
         self.race.update(pose.position, dt);
@@ -257,6 +269,35 @@ impl Game {
             self.engine
                 .particle_burst(self.dust, 12, [pos.x, pos.y, pos.z]);
         }
+    }
+
+    fn update_vehicle_controls(&mut self, dt: f32) {
+        let throttle_target = match (self.throttle_forward, self.throttle_reverse) {
+            (true, false) => 1.0,
+            (false, true) => -0.35,
+            _ => 0.0,
+        };
+        let steer_target = match (self.steer_left, self.steer_right) {
+            (true, false) => 1.0,
+            (false, true) => -1.0,
+            _ => 0.0,
+        };
+
+        // Frame-rate independent response. Steering returns more quickly than it turns in,
+        // which gives the wheel a positive, natural self-centering feel.
+        let throttle_response = 1.0 - (-dt.min(0.1) * 10.0).exp();
+        let steer_speed = if steer_target == 0.0 { 18.0 } else { 14.0 };
+        let steer_response = 1.0 - (-dt.min(0.1) * steer_speed).exp();
+        self.throttle += (throttle_target - self.throttle) * throttle_response;
+        self.steer += (steer_target - self.steer) * steer_response;
+
+        let (linear, _) = self.engine.get_velocity(self.vehicle.body_handle);
+        let speed = glam::Vec3::from(linear).length();
+        let steering_limit = 0.52 * (1.0 / (1.0 + speed / 48.0)).clamp(0.42, 1.0);
+        self.vehicle
+            .set_velocity(&mut self.engine, self.throttle * 110.0);
+        self.vehicle
+            .set_steering(&mut self.engine, self.steer * steering_limit);
     }
 }
 
@@ -361,29 +402,58 @@ fn project_tangent(v: glam::Vec3, up: glam::Vec3) -> glam::Vec3 {
 }
 
 fn starfield(width: u32, height: u32) -> Vec<[u8; 4]> {
-    let mut pixels = vec![[3, 3, 8, 255]; (width * height) as usize];
-    for i in 0..2400u32 {
-        let h = hash_u32(i.wrapping_mul(747796405).wrapping_add(2891336453));
-        let x = h % width;
-        let y = (h >> 10) % height;
-        let bright = 140 + ((h >> 20) % 115) as u8;
-        pixels[(y * width + x) as usize] = [bright, bright, bright.saturating_sub(8), 255];
-    }
-    let cx = width as i32 * 3 / 4;
-    let cy = height as i32 / 3;
-    for y in 0..height as i32 {
-        for x in 0..width as i32 {
-            let dx = x - cx;
-            let dy = y - cy;
-            let d2 = dx * dx + dy * dy;
-            if d2 < 18 {
-                let idx = (y as u32 * width + x as u32) as usize;
-                pixels[idx] = [255, 210, 140, 255];
-            } else if d2 < 48 {
-                let idx = (y as u32 * width + x as u32) as usize;
-                pixels[idx] = [90, 55, 30, 255];
-            }
+    let mut pixels = Vec::with_capacity((width * height) as usize);
+    for y in 0..height {
+        let v = (y as f32 + 0.5) / height as f32;
+        for x in 0..width {
+            let u = (x as f32 + 0.5) / width as f32;
+            let band = ((v - 0.58 - 0.10 * (u * consts::TAU).sin()).abs() / 0.09).powi(2);
+            let dust = (-band).exp();
+            let grain = (hash_u32(x.wrapping_add(y.wrapping_mul(width))) & 15) as f32 / 15.0;
+            pixels.push([
+                (2.0 + dust * (5.0 + grain * 3.0)) as u8,
+                (3.0 + dust * (4.0 + grain * 2.0)) as u8,
+                (7.0 + dust * (7.0 + grain * 4.0)) as u8,
+                255,
+            ]);
         }
+    }
+
+    // Most stars are dim and neutral; a few carry the subtle warm/cool color seen
+    // in real stellar populations. One texel at this resolution is only 0.35° wide.
+    for i in 0..3100u32 {
+        let h = hash_u32(i.wrapping_mul(747_796_405).wrapping_add(2_891_336_453));
+        let x = h % width;
+        let y = hash_u32(h ^ 0xA341_316C) % height;
+        let magnitude = ((h >> 16) & 0xFF) as f32 / 255.0;
+        let bright = (55.0 + 200.0 * magnitude.powf(3.2)) as u8;
+        let tint = (h >> 8) & 3;
+        let color = match tint {
+            0 => [
+                bright,
+                bright.saturating_sub(14),
+                bright.saturating_sub(30),
+                255,
+            ],
+            1 => [
+                bright.saturating_sub(18),
+                bright.saturating_sub(8),
+                bright,
+                255,
+            ],
+            _ => [bright, bright, bright.saturating_sub(4), 255],
+        };
+        pixels[(y * width + x) as usize] = color;
+    }
+
+    // A distant, small sun with a restrained one-pixel corona.
+    let sun_x = width * 3 / 4;
+    let sun_y = height / 3;
+    pixels[(sun_y * width + sun_x) as usize] = [255, 236, 205, 255];
+    for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+        let x = (sun_x as i32 + dx) as u32;
+        let y = (sun_y as i32 + dy) as u32;
+        pixels[(y * width + x) as usize] = [92, 66, 48, 255];
     }
     pixels
 }
@@ -407,3 +477,21 @@ fn hash_frame(dt: f32, p: glam::Vec3) -> f32 {
 }
 
 include!("game_ui.inc.rs");
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn starfield_is_sparse_and_point_like() {
+        let sky = super::starfield(512, 256);
+        assert_eq!(sky.len(), 512 * 256);
+        let luminous = sky
+            .iter()
+            .filter(|pixel| pixel[0].max(pixel[1]).max(pixel[2]) > 50)
+            .count();
+        assert!(luminous > 1_000);
+        assert!(
+            luminous < sky.len() / 30,
+            "stars should not flatten the sky"
+        );
+    }
+}
