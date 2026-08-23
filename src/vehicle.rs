@@ -68,6 +68,9 @@ pub fn spawn(
         steering_angle: 0.0,
         wheel_spin: 0.0,
     };
+    // The car can cover more than one small terrain triangle per simulation step.
+    // Swept collision detection prevents it from tunnelling into rocks or the road.
+    engine.set_ccd_enabled(vehicle.body_handle, true);
 
     let wheel_config = blade_engine::config::Object {
         name: "vehicle/wheel".to_string(),
@@ -233,19 +236,15 @@ impl Vehicle {
 
     fn sync_wheels_to_pose(&self, engine: &mut blade_engine::Engine, pose: &Isometry) {
         for wheel in self.wheels.iter() {
-            let steer = if wheel.steerable {
-                glam::Quat::from_rotation_y(self.steering_angle)
-            } else {
-                glam::Quat::IDENTITY
-            };
-            let spin = glam::Quat::from_rotation_x(self.wheel_spin);
-            engine.teleport_object(
-                wheel.object,
-                blade_engine::Transform {
-                    position: (pose.position + pose.orientation * wheel.local_position).into(),
-                    orientation: (pose.orientation * steer * wheel.flip * spin).into(),
-                },
+            let wheel_pose = wheel_visual_pose(
+                pose,
+                wheel.local_position,
+                wheel.flip,
+                wheel.steerable,
+                self.steering_angle,
+                self.wheel_spin,
             );
+            engine.teleport_object(wheel.object, wheel_pose.to_blade());
         }
     }
 
@@ -269,6 +268,28 @@ impl Vehicle {
             position: start.position + normal * hover + side * lateral_offset,
             orientation: planet::surface_quat(normal, tangent),
         }
+    }
+}
+
+fn wheel_visual_pose(
+    body_pose: &Isometry,
+    local_position: glam::Vec3,
+    flip: glam::Quat,
+    steerable: bool,
+    steering_angle: f32,
+    wheel_spin: f32,
+) -> Isometry {
+    let steer = if steerable {
+        glam::Quat::from_rotation_y(steering_angle)
+    } else {
+        glam::Quat::IDENTITY
+    };
+    let spin = glam::Quat::from_rotation_x(wheel_spin);
+    Isometry {
+        position: body_pose.position + body_pose.orientation * local_position,
+        // Apply the cosmetic side flip last. Putting it before `spin` mirrors
+        // the spin axis and makes the two sides appear to counter-rotate.
+        orientation: body_pose.orientation * steer * spin * flip,
     }
 }
 
@@ -327,5 +348,32 @@ fn clone_shape(src: &blade_engine::config::Shape) -> blade_engine::config::Shape
             convex,
             border_radius,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn left_and_right_wheels_have_the_same_world_spin_direction() {
+        let body = Isometry {
+            position: glam::Vec3::ZERO,
+            orientation: glam::Quat::IDENTITY,
+        };
+        let step = 0.2;
+        let mut deltas = Vec::new();
+        for x in [-0.5, 0.5] {
+            let flip = if x > 0.0 {
+                glam::Quat::from_rotation_y(consts::PI)
+            } else {
+                glam::Quat::IDENTITY
+            };
+            let local_position = glam::Vec3::new(x, -0.1, 0.7);
+            let before = wheel_visual_pose(&body, local_position, flip, true, 0.3, 0.0).orientation;
+            let after = wheel_visual_pose(&body, local_position, flip, true, 0.3, step).orientation;
+            deltas.push(after * before.inverse());
+        }
+        assert!(deltas[0].dot(deltas[1]).abs() > 0.9999);
     }
 }

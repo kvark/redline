@@ -4,6 +4,8 @@ pub struct Driver {
     pub vehicle: vehicle::Vehicle,
     steering: f32,
     target_speed: f32,
+    lateral_offset: f32,
+    stuck_time: f32,
 }
 
 impl Driver {
@@ -23,6 +25,8 @@ impl Driver {
             vehicle,
             steering: 0.0,
             target_speed,
+            lateral_offset,
+            stuck_time: 0.0,
         }
     }
 
@@ -37,16 +41,30 @@ impl Driver {
         let (nearest, _) = planet::track_progress(pose.position, track);
         let (linear, _) = engine.get_velocity(self.vehicle.body_handle);
         let speed = glam::Vec3::from(linear).length();
+
+        if speed < 1.0 {
+            self.stuck_time += dt.min(0.1);
+        } else {
+            self.stuck_time = 0.0;
+        }
+        if self.stuck_time > 2.5 {
+            // A lightweight recovery keeps simple drivers from spending the race
+            // wedged against scenery. Advance slightly so the same obstacle is not
+            // selected immediately after respawning.
+            let respawn =
+                vehicle::Vehicle::spawn_pose_at(track, nearest + 3, 1.4, self.lateral_offset);
+            self.vehicle.teleport(engine, &respawn);
+            self.steering = 0.0;
+            self.stuck_time = 0.0;
+            return;
+        }
         let look_ahead = (7 + (speed * 0.32) as usize).min(18);
         let target = track[(nearest + look_ahead) % track.len()];
 
         let up = pose.position.normalize_or_zero();
         let forward = reject_from(pose.orientation * glam::Vec3::Z, up).normalize_or_zero();
         let desired = reject_from(target.position - pose.position, up).normalize_or_zero();
-        let heading_error = desired
-            .cross(forward)
-            .dot(up)
-            .atan2(desired.dot(forward).clamp(-1.0, 1.0));
+        let heading_error = signed_heading_error(forward, desired, up);
         let steering_target = (heading_error * 1.8).clamp(-1.0, 1.0);
         let response = 1.0 - (-dt.min(0.1) * 7.0).exp();
         self.steering += (steering_target - self.steering) * response;
@@ -66,4 +84,25 @@ impl Driver {
 
 fn reject_from(vector: glam::Vec3, normal: glam::Vec3) -> glam::Vec3 {
     vector - normal * vector.dot(normal)
+}
+
+fn signed_heading_error(forward: glam::Vec3, desired: glam::Vec3, up: glam::Vec3) -> f32 {
+    forward
+        .cross(desired)
+        .dot(up)
+        .atan2(desired.dot(forward).clamp(-1.0, 1.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heading_error_turns_toward_the_target() {
+        let up = glam::Vec3::Y;
+        let forward = glam::Vec3::Z;
+        assert!(signed_heading_error(forward, glam::Vec3::X, up) > 0.0);
+        assert!(signed_heading_error(forward, -glam::Vec3::X, up) < 0.0);
+        assert_eq!(signed_heading_error(forward, forward, up), 0.0);
+    }
 }
