@@ -9,10 +9,12 @@
             density: 100.0,
             friction: 1.4,
             shape: ConvexHull(
-                border_radius: 0.06,
+                // The chassis is the driving contact surface. A generous round border
+                // makes it slide over terrain seams instead of catching a sharp corner.
+                border_radius: 0.14,
                 points: [
-                    (-0.56, -0.34, -0.68), (0.56, -0.34, -0.68),
-                    (-0.56, -0.34, 0.68), (0.56, -0.34, 0.68),
+                    (-0.38, -0.30, -0.68), (0.38, -0.30, -0.68),
+                    (-0.38, -0.30, 0.68), (0.38, -0.30, 0.68),
                     (-0.52, -0.18, -1.06), (0.52, -0.18, -1.06),
                     (-0.52, -0.18, 1.06), (0.52, -0.18, 1.06),
                     (-0.50, 0.10, -0.82), (0.50, 0.10, -0.82),

@@ -7,6 +7,7 @@ use web_time as time;
 
 use crate::ai;
 use crate::config;
+use crate::control;
 use crate::planet;
 use crate::race;
 use crate::vehicle;
@@ -28,8 +29,7 @@ pub struct Game {
     planet_cfg: config::Planet,
     race: race::Race,
     spawn: Isometry,
-    throttle: f32,
-    steer: f32,
+    controller: control::PlayerController,
     throttle_forward: bool,
     throttle_reverse: bool,
     steer_left: bool,
@@ -107,6 +107,13 @@ impl Game {
                 z: 0.035,
             },
             space_sky: true,
+            directional_shadows: Some(blade_render::DirectionalShadowConfig {
+                resolution: 512,
+                distance: 52.0,
+                depth: 220.0,
+                strength: 0.9,
+                normal_bias: 0.07,
+            }),
         });
         // A higher resolution environment keeps individual stars point-like instead of
         // turning every texel into a large square on the sky dome.
@@ -250,8 +257,7 @@ impl Game {
             planet_cfg,
             race,
             spawn,
-            throttle: 0.0,
-            steer: 0.0,
+            controller: control::PlayerController::default(),
             throttle_forward: false,
             throttle_reverse: false,
             steer_left: false,
@@ -272,7 +278,7 @@ impl Game {
         self.vehicle
             .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
         self.vehicle
-            .apply_stability(&mut self.engine, dt, self.steer);
+            .apply_stability(&mut self.engine, dt, self.controller.steering());
         for driver in self.ai_drivers.iter_mut() {
             driver.update(
                 &mut self.engine,
@@ -306,32 +312,22 @@ impl Game {
     }
 
     fn update_vehicle_controls(&mut self, dt: f32) {
-        let throttle_target = match (self.throttle_forward, self.throttle_reverse) {
-            (true, false) => 1.0,
-            (false, true) => -0.35,
-            _ => 0.0,
-        };
-        let steer_target = match (self.steer_left, self.steer_right) {
-            (true, false) => 1.0,
-            (false, true) => -1.0,
-            _ => 0.0,
-        };
-
-        // Frame-rate independent response. Steering returns more quickly than it turns in,
-        // which gives the wheel a positive, natural self-centering feel.
-        let throttle_response = 1.0 - (-dt.min(0.1) * 10.0).exp();
-        let steer_speed = if steer_target == 0.0 { 18.0 } else { 14.0 };
-        let steer_response = 1.0 - (-dt.min(0.1) * steer_speed).exp();
-        self.throttle += (throttle_target - self.throttle) * throttle_response;
-        self.steer += (steer_target - self.steer) * steer_response;
-
         let (linear, _) = self.engine.get_velocity(self.vehicle.body_handle);
         let speed = glam::Vec3::from(linear).length();
-        let steering_limit = 0.52 * (1.0 / (1.0 + speed / 48.0)).clamp(0.42, 1.0);
+        let command = self.controller.update(
+            control::Input {
+                throttle_forward: self.throttle_forward,
+                throttle_reverse: self.throttle_reverse,
+                steer_left: self.steer_left,
+                steer_right: self.steer_right,
+            },
+            speed,
+            dt,
+        );
         self.vehicle.drive(
             &mut self.engine,
-            self.throttle * 30.0,
-            self.steer * steering_limit,
+            command.target_speed,
+            command.steering_angle,
             dt,
         );
     }

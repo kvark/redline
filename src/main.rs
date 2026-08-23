@@ -13,6 +13,7 @@
 
 mod ai;
 mod config;
+mod control;
 mod game;
 mod glb;
 mod planet;
