@@ -68,10 +68,6 @@ pub fn spawn(
         steering_angle: 0.0,
         wheel_spin: 0.0,
     };
-    // The car can cover more than one small terrain triangle per simulation step.
-    // Swept collision detection prevents it from tunnelling into rocks or the road.
-    engine.set_ccd_enabled(vehicle.body_handle, true);
-
     let wheel_config = blade_engine::config::Object {
         name: "vehicle/wheel".to_string(),
         visuals: vec![clone_visual(&veh_config.wheel.visual)],
