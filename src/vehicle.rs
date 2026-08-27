@@ -10,6 +10,8 @@ pub struct Wheel {
     spin_joint: blade_engine::JointHandle,
     suspender: Option<blade_engine::ObjectHandle>,
     steer_joint: Option<blade_engine::JointHandle>,
+    /// Body-space X of the wheel. Negative is left.
+    lateral: f32,
 }
 
 pub struct Vehicle {
@@ -20,7 +22,6 @@ pub struct Vehicle {
     pub wheels: Vec<Wheel>,
     wheel_radius: f32,
     wheel_mass: f32,
-    suspender_mass: f32,
     stuck_time: f32,
     inverted_time: f32,
     prev_speed: f32,
@@ -94,8 +95,7 @@ pub fn spawn(
         body_mass: veh_config.body_mass,
         wheels: Vec::new(),
         wheel_radius,
-        wheel_mass: 6.0,
-        suspender_mass: 4.0,
+        wheel_mass: 8.0,
         stuck_time: 0.0,
         inverted_time: 0.0,
         prev_speed: 0.0,
@@ -229,6 +229,7 @@ pub fn spawn(
                 } else {
                     None
                 },
+                lateral: wheel_x,
             });
         }
     }
@@ -245,17 +246,26 @@ impl Vehicle {
         dt: f32,
     ) {
         engine.wake_up(self.body_handle);
-        let omega = wheel_omega(target_speed, self.wheel_radius);
+        let pose = self.pose(engine);
+        let up = pose.position.normalize_or_zero();
+        let forward = (pose.orientation * glam::Vec3::Z).reject_from(up);
+        let forward = forward.normalize_or_zero();
+        let (linear, angular) = engine.get_velocity(self.body_handle);
+        let linear = glam::Vec3::from(linear);
+        let angular = glam::Vec3::from(angular);
+        let forward_speed = linear.dot(forward);
+        // Bicycle-model yaw for a 1.5m wheelbase. The wheel motors supply most of
+        // the motion; this is a contact assist so high-speed steering still bites
+        // on a sphere where the tire patch is tiny.
+        let wheelbase = 1.5;
+        let desired_yaw = forward_speed * steering_angle / wheelbase;
         for wheel in self.wheels.iter() {
-            engine.wake_up(wheel.object);
-            if let Some(suspender) = wheel.suspender {
-                engine.wake_up(suspender);
-            }
+            let wheel_speed = target_speed + desired_yaw * wheel.lateral;
             engine.set_joint_motor(
                 wheel.spin_joint,
                 blade_engine::JointAxis::AngularX,
                 0.0,
-                omega,
+                wheel_omega(wheel_speed, self.wheel_radius),
             );
             if let Some(handle) = wheel.steer_joint {
                 engine.set_joint_motor(
@@ -267,23 +277,19 @@ impl Vehicle {
             }
         }
 
+        let yaw_error = desired_yaw - angular.dot(up);
+        if yaw_error.abs() > 1e-4 && forward.length_squared() > 1e-5 {
+            let assist = up * yaw_error * self.body_mass * 1.1 * dt.min(0.05);
+            engine.apply_angular_impulse(self.body_handle, assist.into());
+        }
+
         // If the tires have lost the ground (beached on a rock, hung on a lip),
         // the spin motors cannot recover. A small chassis shove unsticks without
         // replacing ordinary wheel drive.
-        let pose = self.pose(engine);
-        let up = pose.position.normalize_or_zero();
-        let forward = (pose.orientation * glam::Vec3::Z).reject_from(up);
-        if forward.length_squared() > 1e-5 && target_speed.abs() > 2.0 {
-            let (linear, _) = engine.get_velocity(self.body_handle);
-            let forward_speed = glam::Vec3::from(linear).dot(forward.normalize());
-            if forward_speed.abs() < 0.9 {
-                let shove = forward.normalize()
-                    * target_speed.signum()
-                    * self.body_mass
-                    * 7.0
-                    * dt.min(0.05);
-                engine.apply_linear_impulse(self.body_handle, shove.into());
-            }
+        if forward.length_squared() > 1e-5 && target_speed.abs() > 2.0 && forward_speed.abs() < 0.9
+        {
+            let shove = forward * target_speed.signum() * self.body_mass * 7.0 * dt.min(0.05);
+            engine.apply_linear_impulse(self.body_handle, shove.into());
         }
     }
 
@@ -291,9 +297,6 @@ impl Vehicle {
         self.apply_radial_impulse(engine, self.body_handle, self.body_mass, gravity, dt);
         for wheel in self.wheels.iter() {
             self.apply_radial_impulse(engine, wheel.object, self.wheel_mass, gravity, dt);
-            if let Some(suspender) = wheel.suspender {
-                self.apply_radial_impulse(engine, suspender, self.suspender_mass, gravity, dt);
-            }
         }
     }
 
@@ -373,6 +376,10 @@ impl Vehicle {
                 (fwd.normalize() * self.body_mass * 10.0).into(),
             );
         }
+    }
+
+    pub fn wheel_radius(&self) -> f32 {
+        self.wheel_radius
     }
 
     pub fn pose(&self, engine: &blade_engine::Engine) -> Isometry {

@@ -63,7 +63,9 @@ impl Game {
 
         let window = event_loop
             .create_window(
-                winit::window::Window::default_attributes().with_title("Redline — Mars Circuit"),
+                winit::window::Window::default_attributes()
+                    .with_title("Redline — Mars Circuit")
+                    .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0)),
             )
             .unwrap();
 
@@ -116,17 +118,28 @@ impl Game {
                 z: 0.035,
             },
             space_sky: true,
-            directional_shadows: Some(blade_render::DirectionalShadowConfig {
-                resolution: 512,
-                distance: 52.0,
-                depth: 220.0,
-                strength: 0.9,
-                normal_bias: 0.07,
-            }),
+            directional_shadows: if cfg!(target_arch = "wasm32") {
+                None
+            } else {
+                Some(blade_render::DirectionalShadowConfig {
+                    resolution: 512,
+                    distance: 52.0,
+                    depth: 220.0,
+                    strength: 0.9,
+                    normal_bias: 0.07,
+                })
+            },
+            ..Default::default()
         });
         // A higher resolution environment keeps individual stars point-like instead of
-        // turning every texel into a large square on the sky dome.
-        engine.create_environment_map("mars-sky", 1024, 512, &starfield(1024, 512));
+        // turning every texel into a large square on the sky dome. WebGL is happier
+        // with a smaller map at boot.
+        let (sky_w, sky_h) = if cfg!(target_arch = "wasm32") {
+            (512, 256)
+        } else {
+            (1024, 512)
+        };
+        engine.create_environment_map("mars-sky", sky_w, sky_h, &starfield(sky_w, sky_h));
 
         let planet_rel = relative_model(&assets, &planet.planet_model);
         let planet_object = blade_engine::config::Object {
@@ -205,24 +218,21 @@ impl Game {
         let ai_drivers = if cli.script.is_some() {
             Vec::new()
         } else {
-            [
-                (8, -2.1, 15.5, [0.95, 0.32, 0.22, 1.0]),
-                (13, 2.0, 14.5, [0.24, 0.72, 0.95, 1.0]),
-                (18, -0.6, 16.5, [0.82, 0.78, 0.22, 1.0]),
-            ]
-            .into_iter()
-            .map(|(index, lane, speed, tint)| {
-                ai::Driver::spawn(
-                    &mut engine,
-                    &veh_config,
-                    &planet.track,
-                    index,
-                    lane,
-                    speed,
-                    tint,
-                )
-            })
-            .collect()
+            opponent_specs()
+                .iter()
+                .copied()
+                .map(|(index, lane, speed, tint)| {
+                    ai::Driver::spawn(
+                        &mut engine,
+                        &veh_config,
+                        &planet.track,
+                        index,
+                        lane,
+                        speed,
+                        tint,
+                    )
+                })
+                .collect()
         };
 
         let dust = engine.create_particle_system(
@@ -333,15 +343,26 @@ impl Game {
 
     fn emit_dust(&mut self, pose: &Isometry, dt: f32) {
         let (lin, _) = self.engine.get_velocity(self.vehicle.body_handle);
-        let speed = glam::Vec3::from(lin).length();
-        if speed < 6.0 {
+        let vel = glam::Vec3::from(lin);
+        let speed = vel.length();
+        if speed < 4.0 {
             return;
         }
-        if hash_frame(dt, pose.position) < (speed * 0.015).clamp(0.05, 0.55) {
-            let down = -pose.position.normalize_or_zero();
-            let pos = pose.position + down * 0.4;
+        if hash_frame(dt, pose.position) > (speed * 0.045).clamp(0.1, 0.85) {
+            return;
+        }
+        let up = pose.position.normalize_or_zero();
+        let spray = (up * 0.4 - vel.normalize_or_zero() * 0.75).normalize_or_zero();
+        if let Some(system) = self.engine.particle_system_mut(self.dust) {
+            system.axis = [spray.x, spray.y, spray.z];
+        }
+        let radius = self.vehicle.wheel_radius();
+        let count = if speed > 16.0 { 5 } else { 3 };
+        for wheel in self.vehicle.wheels.iter() {
+            let pos = glam::Vec3::from(self.engine.get_object_position(wheel.object));
+            let contact = pos - up * radius;
             self.engine
-                .particle_burst(self.dust, 12, [pos.x, pos.y, pos.z]);
+                .particle_burst(self.dust, count, [contact.x, contact.y, contact.z]);
         }
     }
 
@@ -409,6 +430,39 @@ impl Game {
         });
     }
 
+    fn update_local_lights(&mut self, eye: glam::Vec3) {
+        let mut ranked = self
+            .planet
+            .decorations
+            .iter()
+            .filter_map(|deco| {
+                let color = deco.glow?;
+                let delta = deco.position - eye;
+                let dist2 = delta.length_squared().max(4.0);
+                let intensity = color[0].max(color[1]).max(color[2]);
+                Some((
+                    intensity / dist2,
+                    blade_render::PointLight {
+                        position: deco.position.into(),
+                        color: mint::Vector3 {
+                            x: color[0],
+                            y: color[1],
+                            z: color[2],
+                        },
+                        radius: 11.0 + deco.scale * 0.65,
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let lights: Vec<_> = ranked
+            .into_iter()
+            .take(blade_render::MAX_POINT_LIGHTS)
+            .map(|(_, light)| light)
+            .collect();
+        self.engine.set_point_lights(&lights);
+    }
+
     pub(crate) fn script_finished(&self) -> bool {
         self.record_seconds
             .is_some_and(|limit| self.sim_time >= limit)
@@ -422,6 +476,39 @@ struct Cli {
     seconds: Option<f32>,
 }
 
+fn opponent_specs() -> &'static [(usize, f32, f32, [f32; 4])] {
+    // Extra vehicles are a full Rapier joint graph each. Debug and WASM keep a
+    // lighter set so the scene still boots at an interactive rate.
+    #[cfg(target_arch = "wasm32")]
+    {
+        const NONE: [(usize, f32, f32, [f32; 4]); 0] = [];
+        &NONE
+    }
+    #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
+    {
+        &[(8, -2.1, 15.5, [0.95, 0.32, 0.22, 1.0])]
+    }
+    #[cfg(all(not(target_arch = "wasm32"), not(debug_assertions)))]
+    {
+        &[
+            (8, -2.1, 15.5, [0.95, 0.32, 0.22, 1.0]),
+            (13, 2.0, 14.5, [0.24, 0.72, 0.95, 1.0]),
+            (18, -0.6, 16.5, [0.82, 0.78, 0.22, 1.0]),
+        ]
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_cli() -> Cli {
+    Cli {
+        smoke_frames: None,
+        record_path: None,
+        script: None,
+        seconds: None,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_cli() -> Cli {
     let mut cli = Cli {
         smoke_frames: None,

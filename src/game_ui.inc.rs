@@ -136,6 +136,7 @@ impl Game {
             .handle_platform_output(&self.window, egui_output.platform_output);
 
         let camera = self.follow_camera();
+        self.update_local_lights(glam::Vec3::from(camera.transform.position));
         let primitives = self
             .egui_state
             .egui_ctx()
