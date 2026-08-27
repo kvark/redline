@@ -28,6 +28,17 @@ xvfb-run -a cargo run -- --smoke 20
 xvfb-run -a cargo run --release -- --smoke 20
 ```
 
+Scripted drive traces (writes CSV and a log summary, then exits):
+
+```sh
+xvfb-run -a cargo run --release -- --script accel --seconds 8
+xvfb-run -a cargo run --release -- --script steer --seconds 8
+xvfb-run -a cargo run --release -- --script offroad --seconds 12
+xvfb-run -a cargo run --release -- --script lap --seconds 12 --record /tmp/redline-lap.csv
+```
+
+Scripts: `accel` (straight throttle), `steer` (hold left), `offroad` (leave the ribbon then return), `lap` (follow the track). Default CSV path is `/tmp/redline-<script>.csv`.
+
 ## Web / WASM
 
 Requires a WebGL2 browser. Assets are embedded at compile time.

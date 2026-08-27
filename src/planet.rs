@@ -16,6 +16,16 @@ pub struct TrackSample {
     pub normal: glam::Vec3,
 }
 
+#[derive(Clone, Copy)]
+pub struct TrackQuery {
+    pub index: usize,
+    pub sample: TrackSample,
+    pub tangent: glam::Vec3,
+    pub side: glam::Vec3,
+    pub lateral: f32,
+    pub radial_error: f32,
+}
+
 pub struct GeneratedPlanet {
     pub radius: f32,
     pub track_width: f32,
@@ -136,6 +146,30 @@ pub fn track_progress(position: glam::Vec3, track: &[TrackSample]) -> (usize, f3
     (best_i, best_i as f32 / track.len().max(1) as f32)
 }
 
+pub fn query_track(position: glam::Vec3, track: &[TrackSample]) -> TrackQuery {
+    let (index, _) = track_progress(position, track);
+    let sample = track[index];
+    let next = track[(index + 1) % track.len().max(1)];
+    let mut tangent = (next.position - sample.position).normalize_or_zero();
+    if tangent.length_squared() < 1e-6 {
+        tangent = sample.tangent;
+    }
+    let side = sample.normal.cross(tangent).normalize_or_zero();
+    let delta = position - sample.position;
+    TrackQuery {
+        index,
+        sample,
+        tangent,
+        side,
+        lateral: delta.dot(side),
+        radial_error: delta.dot(sample.normal),
+    }
+}
+
+pub fn off_track_distance(query: &TrackQuery, track_width: f32) -> f32 {
+    query.lateral.abs() - track_width * 0.5
+}
+
 fn build_track_dirs(count: usize, lat_amp: f32) -> Vec<glam::Vec3> {
     (0..count)
         .map(|i| {
@@ -182,9 +216,17 @@ fn sample_height(dir: glam::Vec3, config: config::Planet, track: &[glam::Vec3]) 
     let dist = angular_distance_to_polyline(dir, track) * config.radius;
     let half = config.track_width * 0.5;
     let track_weight = 1.0 - smoothstep(half * 0.62, half * 1.08, dist);
-    // The road follows the planet's broad geology but filters out wheel-catching detail.
+    // A wide runoff keeps leaving the road from becoming a cliff of FBM ridges.
+    let shoulder_weight = 1.0 - smoothstep(half * 1.0, half * 3.6, dist);
     let track_height = config.radius + config.height_amp * (0.68 * (broad - 0.48) + 0.10);
-    let height = lerp(raw, track_height, track_weight);
+    let runoff = config.radius
+        + config.height_amp
+            * (1.02 * (continental - 0.48) + 0.26 * (rolling - 0.5) + 0.16 * mesa + 0.32 * craters);
+    let height = lerp(
+        lerp(raw, runoff, shoulder_weight),
+        track_height,
+        track_weight,
+    );
     (height, track_weight)
 }
 
@@ -257,7 +299,7 @@ fn place_decorations(
     crystals: &[PathBuf],
 ) -> Vec<Decoration> {
     let track_dirs: Vec<glam::Vec3> = track.iter().map(|s| s.normal).collect();
-    let keep_angle = (config.track_width * 0.62) / config.radius;
+    let keep_angle = (config.track_width * 1.05) / config.radius;
     let mut out = Vec::new();
     let count = config.decoration_count as usize;
     for i in 0..count {
@@ -316,7 +358,7 @@ fn place_decorations(
                     ^ (row as u32).wrapping_mul(0x9E37_79B9)
                     ^ (side_index as u32).wrapping_mul(0x85EB_CA6B),
             );
-            let offset = config.track_width * 0.5 + 4.0 + hash01(h) * 3.5;
+            let offset = config.track_width * 0.5 + 9.0 + hash01(h) * 4.0;
             let point_dir = (sample.position + side * sign * offset).normalize_or_zero();
             let (height, _) = sample_height(point_dir, config, &track_dirs);
             let inward = -side * sign;

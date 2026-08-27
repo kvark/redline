@@ -83,6 +83,10 @@ impl Game {
                         return Err(QuitEvent);
                     }
                 }
+                if self.script_finished() {
+                    log::info!("Drive script finished");
+                    return Err(QuitEvent);
+                }
                 return Ok(if let Some(when) = time::Instant::now().checked_add(wait) {
                     winit::event_loop::ControlFlow::WaitUntil(when)
                 } else {
@@ -168,6 +172,14 @@ impl Game {
         }
         let (lin, _) = self.engine.get_velocity(self.vehicle.body_handle);
         ui.label(format!("Speed {:.0} m/s", glam::Vec3::from(lin).length()));
+        let query = planet::query_track(pose.position, &self.planet.track);
+        let off = planet::off_track_distance(&query, self.planet.track_width);
+        if off > 0.0 {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 160, 90),
+                format!("Off course  {off:.1}m"),
+            );
+        }
         ui.separator();
         ui.label("W/↑ throttle   S/↓ brake   A/D steer");
         ui.label("R respawn   Space jump   ,/. roll");

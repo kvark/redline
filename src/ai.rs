@@ -1,4 +1,4 @@
-use crate::{config, planet, vehicle};
+use crate::{config, control, planet, vehicle};
 
 pub struct Driver {
     pub vehicle: vehicle::Vehicle,
@@ -18,7 +18,12 @@ impl Driver {
         target_speed: f32,
         tint: [f32; 4],
     ) -> Self {
-        let pose = vehicle::Vehicle::spawn_pose_at(track, track_index, 1.4, lateral_offset);
+        let pose = vehicle::Vehicle::spawn_pose_at(
+            track,
+            track_index,
+            vehicle::SPAWN_HOVER,
+            lateral_offset,
+        );
         let vehicle = vehicle::spawn(engine, config, pose);
         engine.set_color_tint(vehicle.body_handle, tint);
         Self {
@@ -51,8 +56,12 @@ impl Driver {
             // A lightweight recovery keeps simple drivers from spending the race
             // wedged against scenery. Advance slightly so the same obstacle is not
             // selected immediately after respawning.
-            let respawn =
-                vehicle::Vehicle::spawn_pose_at(track, nearest + 3, 1.4, self.lateral_offset);
+            let respawn = vehicle::Vehicle::spawn_pose_at(
+                track,
+                nearest + 3,
+                vehicle::SPAWN_HOVER,
+                self.lateral_offset,
+            );
             self.vehicle.teleport(engine, &respawn);
             self.steering = 0.0;
             self.stuck_time = 0.0;
@@ -64,7 +73,7 @@ impl Driver {
         let up = pose.position.normalize_or_zero();
         let forward = reject_from(pose.orientation * glam::Vec3::Z, up).normalize_or_zero();
         let desired = reject_from(target.position - pose.position, up).normalize_or_zero();
-        let heading_error = signed_heading_error(forward, desired, up);
+        let heading_error = control::signed_heading_error(forward, desired, up);
         let steering_target = (heading_error * 1.8).clamp(-1.0, 1.0);
         let response = 1.0 - (-dt.min(0.1) * 7.0).exp();
         self.steering += (steering_target - self.steering) * response;
@@ -78,19 +87,12 @@ impl Driver {
         self.vehicle
             .drive(engine, target_speed, self.steering * steering_limit, dt);
         self.vehicle.apply_gravity(engine, gravity, dt);
-        self.vehicle.apply_stability(engine, dt, self.steering);
+        self.vehicle.apply_stability(engine, dt);
     }
 }
 
 fn reject_from(vector: glam::Vec3, normal: glam::Vec3) -> glam::Vec3 {
     vector - normal * vector.dot(normal)
-}
-
-fn signed_heading_error(forward: glam::Vec3, desired: glam::Vec3, up: glam::Vec3) -> f32 {
-    forward
-        .cross(desired)
-        .dot(up)
-        .atan2(desired.dot(forward).clamp(-1.0, 1.0))
 }
 
 #[cfg(test)]
@@ -101,8 +103,8 @@ mod tests {
     fn heading_error_turns_toward_the_target() {
         let up = glam::Vec3::Y;
         let forward = glam::Vec3::Z;
-        assert!(signed_heading_error(forward, glam::Vec3::X, up) > 0.0);
-        assert!(signed_heading_error(forward, -glam::Vec3::X, up) < 0.0);
-        assert_eq!(signed_heading_error(forward, forward, up), 0.0);
+        assert!(control::signed_heading_error(forward, glam::Vec3::X, up) > 0.0);
+        assert!(control::signed_heading_error(forward, -glam::Vec3::X, up) < 0.0);
+        assert_eq!(control::signed_heading_error(forward, forward, up), 0.0);
     }
 }
