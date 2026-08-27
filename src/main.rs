@@ -11,6 +11,11 @@
     clippy::pattern_type_mismatch
 )]
 
+#[cfg(all(target_arch = "wasm32", not(gles)))]
+compile_error!(
+    "wasm32 builds must set --cfg gles (see .cargo/config.toml); otherwise WebGL cannot link the shadow pipeline"
+);
+
 mod ai;
 mod config;
 mod control;
