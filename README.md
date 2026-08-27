@@ -4,6 +4,8 @@ Race around a procedurally generated planet. Mars is the first circuit.
 
 Play in the browser: <https://kvark.github.io/redline/>
 
+![Redline on the Mars circuit](docs/screenshot.png)
+
 ## Run
 
 Models are stored in Git LFS:

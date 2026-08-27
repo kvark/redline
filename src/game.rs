@@ -63,7 +63,9 @@ impl Game {
 
         let window = event_loop
             .create_window(
-                winit::window::Window::default_attributes().with_title("Redline — Mars Circuit"),
+                winit::window::Window::default_attributes()
+                    .with_title("Redline — Mars Circuit")
+                    .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0)),
             )
             .unwrap();
 
