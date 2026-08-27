@@ -6,19 +6,20 @@
             rot: (0, 180, 0),
         ),
         collider: (
-            density: 100.0,
-            friction: 1.4,
+            density: 210.0,
+            friction: 0.12,
+            restitution: 0.0,
             shape: ConvexHull(
-                // The chassis is the driving contact surface. A generous round border
-                // makes it slide over terrain seams instead of catching a sharp corner.
-                border_radius: 0.14,
+                // Wheels are the driving contact. Keep the hull above the tire
+                // radius (0.28) so the chassis slides instead of digging in.
+                border_radius: 0.16,
                 points: [
-                    (-0.38, -0.30, -0.68), (0.38, -0.30, -0.68),
-                    (-0.38, -0.30, 0.68), (0.38, -0.30, 0.68),
-                    (-0.52, -0.18, -1.06), (0.52, -0.18, -1.06),
-                    (-0.52, -0.18, 1.06), (0.52, -0.18, 1.06),
-                    (-0.50, 0.10, -0.82), (0.50, 0.10, -0.82),
-                    (-0.50, 0.10, 0.82), (0.50, 0.10, 0.82),
+                    (-0.36, -0.06, -0.62), (0.36, -0.06, -0.62),
+                    (-0.36, -0.06, 0.62), (0.36, -0.06, 0.62),
+                    (-0.50, 0.04, -1.00), (0.50, 0.04, -1.00),
+                    (-0.50, 0.04, 1.00), (0.50, 0.04, 1.00),
+                    (-0.48, 0.22, -0.78), (0.48, 0.22, -0.78),
+                    (-0.48, 0.22, 0.78), (0.48, 0.22, 0.78),
                 ],
             ),
         ),
@@ -27,7 +28,26 @@
         visual: (
             model: "models/wheel-racing.glb",
         ),
+        collider: (
+            density: 80.0,
+            friction: 1.15,
+            restitution: 0.0,
+            rot: (0, 0, 90),
+            shape: Cylinder(
+                half_height: 0.1,
+                radius: 0.28,
+            ),
+        ),
     ),
+    suspender: (
+        density: 40.0,
+        shape: Ball(
+            radius: 0.22,
+        ),
+    ),
+    // Velocity-motor damping on wheel spin. Too high and throttle slams;
+    // too low and the car will not hold speed on the climb of the sphere.
+    drive_factor: 70.0,
     jump_impulse: 14,
     roll_impulse: 10,
     body_mass: 130.0,
@@ -36,12 +56,29 @@
             x_wheels: [-0.5, 0.5],
             y: -0.1,
             z: 0.7,
-            max_steering_angle: 30,
+            max_steering_angle: 24,
+            max_suspension_offset: 0.24,
+            steering: (
+                stiffness: 9000,
+                damping: 2800,
+                max_force: 2200,
+            ),
+            suspension: (
+                stiffness: 11000,
+                damping: 1600,
+                max_force: 4000,
+            ),
         ),
         (
             x_wheels: [-0.5, 0.5],
             y: -0.1,
             z: -0.8,
+            max_suspension_offset: 0.24,
+            suspension: (
+                stiffness: 12000,
+                damping: 1800,
+                max_force: 4000,
+            ),
         ),
     ],
 )

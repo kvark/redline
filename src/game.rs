@@ -10,6 +10,7 @@ use crate::config;
 use crate::control;
 use crate::planet;
 use crate::race;
+use crate::trace;
 use crate::vehicle;
 use crate::vehicle::Isometry;
 
@@ -38,12 +39,20 @@ pub struct Game {
     smoke_frames_left: Option<u32>,
     /// Frame counter for the camera / vehicle state-trace journal.
     frame_index: u32,
+    script: Option<trace::Script>,
+    recorder: Option<trace::Recorder>,
+    record_seconds: Option<f32>,
+    sim_time: f32,
+    recovered_this_step: u8,
 }
 
 pub struct QuitEvent;
 
 impl Drop for Game {
     fn drop(&mut self) {
+        if let Some(recorder) = self.recorder.take() {
+            recorder.finish();
+        }
         self.engine.destroy();
     }
 }
@@ -128,7 +137,7 @@ impl Game {
             }],
             colliders: vec![blade_engine::config::Collider {
                 density: 1.0,
-                friction: 1.35,
+                friction: 0.85,
                 restitution: 0.02,
                 shape: blade_engine::config::Shape::TriMesh {
                     model: planet_rel,
@@ -156,11 +165,11 @@ impl Game {
                 }],
                 colliders: vec![blade_engine::config::Collider {
                     density: 1.0,
-                    friction: 0.9,
+                    friction: 0.35,
                     restitution: if deco.kind == planet::DecorationKind::Crystal {
-                        0.15
+                        0.08
                     } else {
-                        0.05
+                        0.02
                     },
                     shape: blade_engine::config::Shape::ConvexHull {
                         points: deco
@@ -190,26 +199,31 @@ impl Game {
         let veh_config: config::Vehicle =
             ron::de::from_bytes(&read_asset_bytes(&assets.join("vehicle.ron")))
                 .expect("unable to parse vehicle config");
-        let spawn = vehicle::Vehicle::spawn_pose(&planet.track, 1.4);
+        let cli = parse_cli();
+        let spawn = vehicle::Vehicle::spawn_pose(&planet.track, vehicle::SPAWN_HOVER);
         let vehicle = vehicle::spawn(&mut engine, &veh_config, spawn.clone());
-        let ai_drivers = [
-            (8, -2.1, 15.5, [0.95, 0.32, 0.22, 1.0]),
-            (13, 2.0, 14.5, [0.24, 0.72, 0.95, 1.0]),
-            (18, -0.6, 16.5, [0.82, 0.78, 0.22, 1.0]),
-        ]
-        .into_iter()
-        .map(|(index, lane, speed, tint)| {
-            ai::Driver::spawn(
-                &mut engine,
-                &veh_config,
-                &planet.track,
-                index,
-                lane,
-                speed,
-                tint,
-            )
-        })
-        .collect();
+        let ai_drivers = if cli.script.is_some() {
+            Vec::new()
+        } else {
+            [
+                (8, -2.1, 15.5, [0.95, 0.32, 0.22, 1.0]),
+                (13, 2.0, 14.5, [0.24, 0.72, 0.95, 1.0]),
+                (18, -0.6, 16.5, [0.82, 0.78, 0.22, 1.0]),
+            ]
+            .into_iter()
+            .map(|(index, lane, speed, tint)| {
+                ai::Driver::spawn(
+                    &mut engine,
+                    &veh_config,
+                    &planet.track,
+                    index,
+                    lane,
+                    speed,
+                    tint,
+                )
+            })
+            .collect()
+        };
 
         let dust = engine.create_particle_system(
             "dust",
@@ -263,22 +277,36 @@ impl Game {
             steer_left: false,
             steer_right: false,
             dust,
-            smoke_frames_left: smoke_frame_budget(),
+            smoke_frames_left: cli.smoke_frames,
             frame_index: 0,
+            script: cli.script,
+            recorder: cli
+                .record_path
+                .map(|path| trace::Recorder::new(path, cli.script.unwrap_or(trace::Script::Lap))),
+            record_seconds: cli.seconds,
+            sim_time: 0.0,
+            recovered_this_step: 0,
         }
     }
 
     fn update_time(&mut self) {
-        let dt = self.last_physics_update.elapsed().as_secs_f32();
+        let wall = self.last_physics_update.elapsed().as_secs_f32();
         self.last_physics_update = time::Instant::now();
+        // Scripted traces use a fixed step so joint/control analysis is not
+        // dominated by whatever frame time lavapipe happened to deliver.
+        let dt = if self.script.is_some() {
+            0.01
+        } else {
+            wall.min(0.05)
+        };
         if self.is_paused {
             return;
         }
+        self.sim_time += dt;
         self.update_vehicle_controls(dt);
         self.vehicle
             .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
-        self.vehicle
-            .apply_stability(&mut self.engine, dt, self.controller.steering());
+        self.vehicle.apply_stability(&mut self.engine, dt);
         for driver in self.ai_drivers.iter_mut() {
             driver.update(
                 &mut self.engine,
@@ -288,13 +316,19 @@ impl Game {
             );
         }
         self.engine.update(dt);
-        self.vehicle.sync_wheels(&mut self.engine);
-        for driver in self.ai_drivers.iter() {
-            driver.vehicle.sync_wheels(&mut self.engine);
-        }
-        let pose = self.vehicle.pose(&self.engine);
+        self.recovered_this_step = u8::from(self.vehicle.recover_if_needed(
+            &mut self.engine,
+            &self.planet.track,
+            self.planet.track_width,
+            vehicle::SPAWN_HOVER,
+            self.controller.throttle().abs() > 0.15,
+            dt,
+        ));
+        let (pose, linear, angular, forward_speed, lateral_speed) =
+            self.vehicle.motion(&self.engine);
         self.race.update(pose.position, dt);
         self.emit_dust(&pose, dt);
+        self.record_sample(&pose, linear, angular, forward_speed, lateral_speed);
     }
 
     fn emit_dust(&mut self, pose: &Isometry, dt: f32) {
@@ -312,18 +346,27 @@ impl Game {
     }
 
     fn update_vehicle_controls(&mut self, dt: f32) {
+        let pose = self.vehicle.pose(&self.engine);
         let (linear, _) = self.engine.get_velocity(self.vehicle.body_handle);
         let speed = glam::Vec3::from(linear).length();
-        let command = self.controller.update(
-            control::Input {
-                throttle_forward: self.throttle_forward,
-                throttle_reverse: self.throttle_reverse,
-                steer_left: self.steer_left,
-                steer_right: self.steer_right,
-            },
-            speed,
-            dt,
-        );
+        let query = planet::query_track(pose.position, &self.planet.track);
+        let off_track = planet::off_track_distance(&query, self.planet.track_width);
+        let heading = trace::look_ahead_heading(&pose, &self.planet.track, speed, true);
+        let command = if let Some(script) = self.script {
+            let (throttle, steer) = script.analog(self.sim_time, heading, off_track);
+            self.controller.analog_command(throttle, steer, speed, dt)
+        } else {
+            self.controller.update(
+                control::Input {
+                    throttle_forward: self.throttle_forward,
+                    throttle_reverse: self.throttle_reverse,
+                    steer_left: self.steer_left,
+                    steer_right: self.steer_right,
+                },
+                speed,
+                dt,
+            )
+        };
         self.vehicle.drive(
             &mut self.engine,
             command.target_speed,
@@ -331,24 +374,106 @@ impl Game {
             dt,
         );
     }
+
+    fn record_sample(
+        &mut self,
+        pose: &Isometry,
+        linear: glam::Vec3,
+        angular: glam::Vec3,
+        forward_speed: f32,
+        lateral_speed: f32,
+    ) {
+        let Some(recorder) = self.recorder.as_mut() else {
+            return;
+        };
+        let up = pose.position.normalize_or_zero();
+        let query = planet::query_track(pose.position, &self.planet.track);
+        recorder.push(trace::Sample {
+            t: self.sim_time,
+            throttle: self.controller.throttle(),
+            steer: self.controller.steering(),
+            position: pose.position,
+            speed: linear.length(),
+            forward_speed,
+            lateral_speed,
+            yaw_rate: angular.dot(up),
+            upright: (pose.orientation * glam::Vec3::Y).dot(up),
+            off_track: planet::off_track_distance(&query, self.planet.track_width),
+            heading_error: trace::look_ahead_heading(
+                pose,
+                &self.planet.track,
+                linear.length(),
+                true,
+            ),
+            recovered: self.recovered_this_step,
+        });
+    }
+
+    pub(crate) fn script_finished(&self) -> bool {
+        self.record_seconds
+            .is_some_and(|limit| self.sim_time >= limit)
+    }
 }
 
-fn smoke_frame_budget() -> Option<u32> {
+struct Cli {
+    smoke_frames: Option<u32>,
+    record_path: Option<PathBuf>,
+    script: Option<trace::Script>,
+    seconds: Option<f32>,
+}
+
+fn parse_cli() -> Cli {
+    let mut cli = Cli {
+        smoke_frames: None,
+        record_path: None,
+        script: None,
+        seconds: None,
+    };
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--smoke" {
-            return Some(
-                args.next()
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(20),
-            );
+        match arg.as_str() {
+            "--smoke" => {
+                cli.smoke_frames = Some(
+                    args.next()
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(20),
+                );
+            }
+            "--record" => {
+                cli.record_path = args.next().map(PathBuf::from);
+            }
+            "--script" => {
+                let name = args.next().unwrap_or_else(|| "lap".to_string());
+                cli.script = Some(
+                    trace::Script::parse(&name)
+                        .unwrap_or_else(|| panic!("unknown script '{name}'")),
+                );
+            }
+            "--seconds" => {
+                cli.seconds = args.next().and_then(|value| value.parse().ok());
+            }
+            _ => {}
         }
     }
-    match env::var("REDLINE_SMOKE") {
-        Ok(value) if value.is_empty() || value == "1" => Some(20),
-        Ok(value) => Some(value.parse().expect("REDLINE_SMOKE must be a frame count")),
-        Err(_) => None,
+    if cli.smoke_frames.is_none() {
+        cli.smoke_frames = match env::var("REDLINE_SMOKE") {
+            Ok(value) if value.is_empty() || value == "1" => Some(20),
+            Ok(value) => Some(value.parse().expect("REDLINE_SMOKE must be a frame count")),
+            Err(_) => None,
+        };
     }
+    if cli.record_path.is_none()
+        && let Some(script) = cli.script
+    {
+        cli.record_path = Some(PathBuf::from(format!(
+            "/tmp/redline-{}.csv",
+            script.as_str()
+        )));
+    }
+    if cli.seconds.is_none() && (cli.script.is_some() || cli.record_path.is_some()) {
+        cli.seconds = Some(10.0);
+    }
+    cli
 }
 
 fn assets_dir() -> PathBuf {
@@ -398,17 +523,7 @@ fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlan
             scale: 1.6,
             ..Default::default()
         }],
-        colliders: vec![blade_engine::config::Collider {
-            density: 1.0,
-            friction: 0.8,
-            restitution: 0.05,
-            shape: blade_engine::config::Shape::Cuboid {
-                half: [0.10, 0.11, 0.10].into(),
-            },
-            // Bounds of the scaled GLB, including its authored node translation.
-            pos: [-0.56, 0.09, -1.04].into(),
-            rot: [0.0; 3].into(),
-        }],
+        colliders: vec![],
         additional_mass: None,
     };
     let stride = (planet.track.len() / 14).max(1);

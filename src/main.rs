@@ -18,6 +18,7 @@ mod game;
 mod glb;
 mod planet;
 mod race;
+mod trace;
 mod vehicle;
 
 use game::{Game, QuitEvent};
