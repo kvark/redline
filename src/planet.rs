@@ -42,6 +42,8 @@ pub struct Decoration {
     pub scale: f32,
     pub collider_points: Vec<glam::Vec3>,
     pub kind: DecorationKind,
+    /// Linear RGB intensity if this decoration is a glowing crystal.
+    pub glow: Option<[f32; 3]>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -334,17 +336,28 @@ fn place_decorations(
         } else {
             (elongated_collider(scale, 1.0), 1.85 * scale)
         };
+        let kind = if is_crystal {
+            DecorationKind::Crystal
+        } else {
+            DecorationKind::Stone
+        };
+        let glow = if is_crystal {
+            Some(match i % 3 {
+                0 => [0.35, 2.8, 3.6],
+                1 => [3.8, 0.45, 0.28],
+                _ => [0.55, 2.6, 0.7],
+            })
+        } else {
+            None
+        };
         out.push(Decoration {
             model,
             position: dir * height + tilted * lift,
             orientation,
             scale,
             collider_points,
-            kind: if is_crystal {
-                DecorationKind::Crystal
-            } else {
-                DecorationKind::Stone
-            },
+            kind,
+            glow,
         });
     }
 
@@ -373,6 +386,7 @@ fn place_decorations(
                 scale,
                 collider_points: elongated_collider(scale, 0.34),
                 kind: DecorationKind::Stone,
+                glow: None,
             });
         }
     }
@@ -455,9 +469,9 @@ fn write_spire_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
 
 fn write_crystal_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
     let looks = [
-        ([0.16, 0.36, 0.42, 1.0], [0.025, 0.16, 0.20]),
-        ([0.44, 0.055, 0.035, 1.0], [0.32, 0.018, 0.008]),
-        ([0.22, 0.34, 0.12, 1.0], [0.08, 0.18, 0.025]),
+        ([0.16, 0.36, 0.42, 1.0], [0.18, 1.35, 1.70]),
+        ([0.44, 0.055, 0.035, 1.0], [2.40, 0.16, 0.08]),
+        ([0.22, 0.34, 0.12, 1.0], [0.55, 1.40, 0.22]),
     ];
     looks
         .iter()

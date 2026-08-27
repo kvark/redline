@@ -14,6 +14,10 @@ git lfs pull
 cargo run --release
 ```
 
+The vehicle is a Rapier joint graph (chassis, four wheels, suspenders). Debug
+builds of that solver are much slower than `--release`; use release for playable
+framerate.
+
 Optional ray-traced lighting (needs RT hardware):
 
 ```sh
@@ -41,7 +45,8 @@ Scripts: `accel` (straight throttle), `steer` (hold left), `offroad` (leave the 
 
 ## Web / WASM
 
-Requires a WebGL2 browser. Assets are embedded at compile time.
+Requires a WebGL2 browser. Assets are embedded at compile time. The web build
+skips extra AI cars and directional shadows so it can boot on GLES.
 
 ```sh
 rustup target add wasm32-unknown-unknown

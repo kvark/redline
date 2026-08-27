@@ -54,7 +54,7 @@ impl PlayerController {
     }
 
     fn command(&self, speed: f32) -> Command {
-        let steering_limit = 0.46 * (1.0 / (1.0 + speed / 36.0)).clamp(0.38, 1.0);
+        let steering_limit = 0.52 * (1.0 / (1.0 + speed / 70.0)).clamp(0.42, 1.0);
         Command {
             target_speed: self.throttle * 26.0,
             steering_angle: self.steering * steering_limit,
