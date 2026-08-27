@@ -43,17 +43,20 @@
         // winit's web EventLoop::run throws after spawning the async
         // loop so the Rust signature can stay `!`. This is intentional.
         const msg = err && (err.message || String(err));
-        if (typeof msg === "string" && msg.startsWith("Using exceptions for control flow,")) {
+        const controlFlow =
+          typeof msg === "string" &&
+          msg.startsWith("Using exceptions for control flow,");
+        if (controlFlow) {
           boot?.remove();
-          return;
+        } else {
+          if (boot) {
+            boot.textContent = String(err);
+            boot.style.pointerEvents = "auto";
+            boot.style.padding = "2rem";
+            boot.style.whiteSpace = "pre-wrap";
+          }
+          throw err;
         }
-        if (boot) {
-          boot.textContent = String(err);
-          boot.style.pointerEvents = "auto";
-          boot.style.padding = "2rem";
-          boot.style.whiteSpace = "pre-wrap";
-        }
-        throw err;
       }
     </script>
   </body>

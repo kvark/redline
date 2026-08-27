@@ -8,7 +8,7 @@
         collider: (
             density: 210.0,
             friction: 0.12,
-            restitution: 0.0,
+            restitution: 0.22,
             shape: ConvexHull(
                 // Wheels are the driving contact. Keep the hull above the tire
                 // radius (0.28) so the chassis slides instead of digging in.

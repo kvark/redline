@@ -26,6 +26,16 @@ pub struct Vehicle {
     inverted_time: f32,
     prev_speed: f32,
     hopped: bool,
+    recoil: f32,
+}
+
+/// Visual / stance override used so opponents are not clones of the player car.
+#[derive(Clone, Copy)]
+pub struct Kit {
+    pub body_model: &'static str,
+    pub wheel_model: &'static str,
+    pub tint: [f32; 4],
+    pub half_track: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,10 +84,27 @@ pub fn spawn(
     engine: &mut blade_engine::Engine,
     veh_config: &config::Vehicle,
     pose: Isometry,
+    kit: Option<Kit>,
 ) -> Vehicle {
+    let mut body_visual = clone_visual(&veh_config.body.visual);
+    let mut wheel_visual = clone_visual(&veh_config.wheel.visual);
+    if let Some(kit) = kit {
+        body_visual.model = kit.body_model.to_string();
+        body_visual.pos = mint::Vector3 {
+            x: 0.0,
+            y: -0.05,
+            z: 0.0,
+        };
+        body_visual.rot = mint::Vector3 {
+            x: 0.0,
+            y: 180.0,
+            z: 0.0,
+        };
+        wheel_visual.model = kit.wheel_model.to_string();
+    }
     let body_config = blade_engine::config::Object {
         name: "vehicle/body".to_string(),
-        visuals: vec![clone_visual(&veh_config.body.visual)],
+        visuals: vec![body_visual],
         colliders: vec![clone_collider(&veh_config.body.collider)],
         additional_mass: None,
     };
@@ -86,6 +113,10 @@ pub fn spawn(
         pose.to_blade(),
         blade_engine::DynamicInput::Full,
     );
+    engine.set_ccd_enabled(body_handle, true);
+    if let Some(kit) = kit {
+        engine.set_color_tint(body_handle, kit.tint);
+    }
 
     let wheel_radius = shape_radius(&veh_config.wheel.collider.shape).unwrap_or(0.28);
     let mut vehicle = Vehicle {
@@ -100,10 +131,11 @@ pub fn spawn(
         inverted_time: 0.0,
         prev_speed: 0.0,
         hopped: false,
+        recoil: 0.0,
     };
     let wheel_config = blade_engine::config::Object {
         name: "vehicle/wheel".to_string(),
-        visuals: vec![clone_visual(&veh_config.wheel.visual)],
+        visuals: vec![wheel_visual],
         colliders: vec![clone_collider(&veh_config.wheel.collider)],
         additional_mass: None,
     };
@@ -117,7 +149,15 @@ pub fn spawn(
     let spawn_pos = pose.position;
     let spawn_rot = pose.orientation;
     for axle in veh_config.axles.iter() {
-        for &wheel_x in axle.x_wheels.iter() {
+        let wheel_xs: Vec<f32> = match kit {
+            Some(kit) => axle
+                .x_wheels
+                .iter()
+                .map(|x| x.signum() * kit.half_track)
+                .collect(),
+            None => axle.x_wheels.clone(),
+        };
+        for &wheel_x in wheel_xs.iter() {
             let local = glam::Vec3::new(wheel_x, axle.y, axle.z);
             let offset = spawn_rot * local;
             let flip = if wheel_x > 0.0 {
@@ -245,6 +285,12 @@ impl Vehicle {
         steering_angle: f32,
         dt: f32,
     ) {
+        let mut target_speed = target_speed;
+        if self.recoil > 0.0 {
+            let damp = (self.recoil / 0.5).clamp(0.0, 1.0);
+            self.recoil = (self.recoil - dt).max(0.0);
+            target_speed *= 1.0 - 0.75 * damp;
+        }
         engine.wake_up(self.body_handle);
         let pose = self.pose(engine);
         let up = pose.position.normalize_or_zero();
@@ -368,6 +414,7 @@ impl Vehicle {
         self.inverted_time = 0.0;
         self.prev_speed = 0.0;
         self.hopped = false;
+        self.recoil = 0.0;
         let up = pose.position.normalize_or_zero();
         let fwd = (pose.orientation * glam::Vec3::Z).reject_from(up);
         if fwd.length_squared() > 1e-5 {
@@ -380,6 +427,22 @@ impl Vehicle {
 
     pub fn wheel_radius(&self) -> f32 {
         self.wheel_radius
+    }
+
+    pub fn register_bump(&mut self) {
+        self.recoil = self.recoil.max(0.5);
+    }
+
+    pub fn is_recoiling(&self) -> bool {
+        self.recoil > 0.0
+    }
+
+    pub fn recoil_time(&self) -> f32 {
+        self.recoil
+    }
+
+    pub fn bump_handles(&self) -> impl Iterator<Item = blade_engine::ObjectHandle> + '_ {
+        std::iter::once(self.body_handle).chain(self.wheels.iter().map(|wheel| wheel.object))
     }
 
     pub fn pose(&self, engine: &blade_engine::Engine) -> Isometry {
