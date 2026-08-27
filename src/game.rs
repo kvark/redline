@@ -1,4 +1,10 @@
-use std::{env, f32::consts, fs, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    f32::consts,
+    fs,
+    path::PathBuf,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time;
@@ -214,22 +220,22 @@ impl Game {
                 .expect("unable to parse vehicle config");
         let cli = parse_cli();
         let spawn = vehicle::Vehicle::spawn_pose(&planet.track, vehicle::SPAWN_HOVER);
-        let vehicle = vehicle::spawn(&mut engine, &veh_config, spawn.clone());
+        let vehicle = vehicle::spawn(&mut engine, &veh_config, spawn.clone(), None);
         let ai_drivers = if cli.script.is_some() {
             Vec::new()
         } else {
             opponent_specs()
                 .iter()
                 .copied()
-                .map(|(index, lane, speed, tint)| {
+                .map(|spec| {
                     ai::Driver::spawn(
                         &mut engine,
                         &veh_config,
                         &planet.track,
-                        index,
-                        lane,
-                        speed,
-                        tint,
+                        spec.index,
+                        spec.lane,
+                        spec.speed,
+                        spec.kit,
                     )
                 })
                 .collect()
@@ -326,6 +332,7 @@ impl Game {
             );
         }
         self.engine.update(dt);
+        self.apply_vehicle_bumps();
         self.recovered_this_step = u8::from(self.vehicle.recover_if_needed(
             &mut self.engine,
             &self.planet.track,
@@ -463,6 +470,73 @@ impl Game {
         self.engine.set_point_lights(&lights);
     }
 
+    fn apply_vehicle_bumps(&mut self) {
+        let mut owner = HashMap::new();
+        for handle in self.vehicle.bump_handles() {
+            owner.insert(handle, 0usize);
+        }
+        for (index, driver) in self.ai_drivers.iter().enumerate() {
+            for handle in driver.vehicle.bump_handles() {
+                owner.insert(handle, index + 1);
+            }
+        }
+        let mut pairs = HashSet::new();
+        for contact in self.engine.drain_contacts() {
+            let Some(&a) = owner.get(&contact.object_a) else {
+                continue;
+            };
+            let Some(&b) = owner.get(&contact.object_b) else {
+                continue;
+            };
+            if a != b {
+                pairs.insert(if a < b { (a, b) } else { (b, a) });
+            }
+        }
+        for (a, b) in pairs {
+            let (handle_a, pos_a, mass_a, recoil_a) = self.bump_state(a);
+            let (handle_b, pos_b, mass_b, recoil_b) = self.bump_state(b);
+            let up = ((pos_a + pos_b) * 0.5).normalize_or_zero();
+            let lateral = (pos_b - pos_a).reject_from(up);
+            if lateral.length_squared() > 1e-5 {
+                let dir = lateral.normalize();
+                if recoil_a <= 0.08 {
+                    self.engine
+                        .apply_linear_impulse(handle_a, (-dir * mass_a * 8.0).into());
+                    self.engine.wake_up(handle_a);
+                }
+                if recoil_b <= 0.08 {
+                    self.engine
+                        .apply_linear_impulse(handle_b, (dir * mass_b * 8.0).into());
+                    self.engine.wake_up(handle_b);
+                }
+            }
+            self.vehicle_mut(a).register_bump();
+            self.vehicle_mut(b).register_bump();
+        }
+    }
+
+    fn bump_state(&self, id: usize) -> (blade_engine::ObjectHandle, glam::Vec3, f32, f32) {
+        let vehicle = if id == 0 {
+            &self.vehicle
+        } else {
+            &self.ai_drivers[id - 1].vehicle
+        };
+        (
+            vehicle.body_handle,
+            vehicle.pose(&self.engine).position,
+            vehicle.body_mass,
+            vehicle.recoil_time(),
+        )
+    }
+
+    fn vehicle_mut(&mut self, id: usize) -> &mut vehicle::Vehicle {
+        if id == 0 {
+            &mut self.vehicle
+        } else {
+            &mut self.ai_drivers[id - 1].vehicle
+        }
+    }
+
     pub(crate) fn script_finished(&self) -> bool {
         self.record_seconds
             .is_some_and(|limit| self.sim_time >= limit)
@@ -476,25 +550,89 @@ struct Cli {
     seconds: Option<f32>,
 }
 
-fn opponent_specs() -> &'static [(usize, f32, f32, [f32; 4])] {
-    // Extra vehicles are a full Rapier joint graph each. Debug and WASM keep a
-    // lighter set so the scene still boots at an interactive rate.
+#[derive(Clone, Copy)]
+struct OpponentSpec {
+    index: usize,
+    lane: f32,
+    speed: f32,
+    kit: vehicle::Kit,
+}
+
+const KIT_HATCH: vehicle::Kit = vehicle::Kit {
+    body_model: "models/hatchback-sports-body.glb",
+    wheel_model: "models/wheel-racing.glb",
+    tint: [1.0, 0.42, 0.32, 1.0],
+    half_track: 0.32,
+};
+#[allow(dead_code)]
+const KIT_SEDAN: vehicle::Kit = vehicle::Kit {
+    body_model: "models/sedan-sports-body.glb",
+    wheel_model: "models/wheel-dark.glb",
+    tint: [0.42, 0.72, 1.0, 1.0],
+    half_track: 0.32,
+};
+#[allow(dead_code)]
+const KIT_TAXI: vehicle::Kit = vehicle::Kit {
+    body_model: "models/taxi-body.glb",
+    wheel_model: "models/wheel-dark.glb",
+    tint: [1.0, 1.0, 1.0, 1.0],
+    half_track: 0.32,
+};
+
+fn opponent_specs() -> &'static [OpponentSpec] {
+    // Extra vehicles are a full Rapier joint graph each. Debug keeps a lighter
+    // set so the scene still boots at an interactive rate.
     #[cfg(target_arch = "wasm32")]
     {
-        const NONE: [(usize, f32, f32, [f32; 4]); 0] = [];
-        &NONE
+        static SPECS: [OpponentSpec; 2] = [
+            OpponentSpec {
+                index: 8,
+                lane: -2.1,
+                speed: 15.5,
+                kit: KIT_HATCH,
+            },
+            OpponentSpec {
+                index: 13,
+                lane: 2.0,
+                speed: 14.5,
+                kit: KIT_TAXI,
+            },
+        ];
+        &SPECS
     }
     #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
     {
-        &[(8, -2.1, 15.5, [0.95, 0.32, 0.22, 1.0])]
+        static SPECS: [OpponentSpec; 1] = [OpponentSpec {
+            index: 8,
+            lane: -2.1,
+            speed: 15.5,
+            kit: KIT_HATCH,
+        }];
+        &SPECS
     }
     #[cfg(all(not(target_arch = "wasm32"), not(debug_assertions)))]
     {
-        &[
-            (8, -2.1, 15.5, [0.95, 0.32, 0.22, 1.0]),
-            (13, 2.0, 14.5, [0.24, 0.72, 0.95, 1.0]),
-            (18, -0.6, 16.5, [0.82, 0.78, 0.22, 1.0]),
-        ]
+        static SPECS: [OpponentSpec; 3] = [
+            OpponentSpec {
+                index: 8,
+                lane: -2.1,
+                speed: 15.5,
+                kit: KIT_HATCH,
+            },
+            OpponentSpec {
+                index: 13,
+                lane: 2.0,
+                speed: 14.5,
+                kit: KIT_SEDAN,
+            },
+            OpponentSpec {
+                index: 18,
+                lane: -0.6,
+                speed: 16.5,
+                kit: KIT_TAXI,
+            },
+        ];
+        &SPECS
     }
 }
 

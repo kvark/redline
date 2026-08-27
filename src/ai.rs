@@ -16,7 +16,7 @@ impl Driver {
         track_index: usize,
         lateral_offset: f32,
         target_speed: f32,
-        tint: [f32; 4],
+        kit: vehicle::Kit,
     ) -> Self {
         let pose = vehicle::Vehicle::spawn_pose_at(
             track,
@@ -24,8 +24,7 @@ impl Driver {
             vehicle::SPAWN_HOVER,
             lateral_offset,
         );
-        let vehicle = vehicle::spawn(engine, config, pose);
-        engine.set_color_tint(vehicle.body_handle, tint);
+        let vehicle = vehicle::spawn(engine, config, pose, Some(kit));
         Self {
             vehicle,
             steering: 0.0,
@@ -75,11 +74,17 @@ impl Driver {
         let desired = reject_from(target.position - pose.position, up).normalize_or_zero();
         let heading_error = control::signed_heading_error(forward, desired, up);
         let steering_target = (heading_error * 1.8).clamp(-1.0, 1.0);
-        let response = 1.0 - (-dt.min(0.1) * 7.0).exp();
+        let response = if self.vehicle.is_recoiling() {
+            1.0 - (-dt.min(0.1) * 2.2).exp()
+        } else {
+            1.0 - (-dt.min(0.1) * 7.0).exp()
+        };
         self.steering += (steering_target - self.steering) * response;
 
         let steering_limit = 0.48 * (1.0 / (1.0 + speed / 42.0)).clamp(0.45, 1.0);
-        let target_speed = if speed > self.target_speed * 1.12 {
+        let target_speed = if self.vehicle.is_recoiling() {
+            self.target_speed * 0.35
+        } else if speed > self.target_speed * 1.12 {
             0.0
         } else {
             self.target_speed
