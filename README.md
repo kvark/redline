@@ -47,8 +47,9 @@ Scripts: `accel` (straight throttle), `steer` (hold left), `offroad` (leave the 
 
 ## Web / WASM
 
-Requires a WebGL2 browser. Assets are embedded at compile time. The web build
-skips extra AI cars and directional shadows so it can boot on GLES.
+Requires a WebGL2 browser. Assets are embedded at compile time. `.cargo/config.toml`
+sets `--cfg gles` for `wasm32`, which Blade needs so the shadow pipeline includes
+a fragment shader (WebGL cannot link a vertex-only program).
 
 ```sh
 rustup target add wasm32-unknown-unknown

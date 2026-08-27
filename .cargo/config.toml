@@ -1,0 +1,4 @@
+# WASM always uses Blade's GLES/WebGL2 backend. Several Blade paths (shadow
+# fragment shader, compute-skin skip) key off `cfg(gles)`, not `wasm32`.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "gles"]
