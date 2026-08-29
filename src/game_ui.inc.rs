@@ -23,6 +23,7 @@ impl Game {
             } => {
                 let pressed = state == winit::event::ElementState::Pressed;
                 match key_code {
+                    #[cfg(not(target_arch = "wasm32"))]
                     winit::keyboard::KeyCode::Escape => return Err(QuitEvent),
                     winit::keyboard::KeyCode::ArrowUp | winit::keyboard::KeyCode::KeyW => {
                         self.throttle_forward = pressed;
@@ -74,7 +75,8 @@ impl Game {
                 self.steer_right = false;
             }
             winit::event::WindowEvent::CloseRequested => return Err(QuitEvent),
-            winit::event::WindowEvent::Resized(_) | winit::event::WindowEvent::ScaleFactorChanged { .. } => {
+            winit::event::WindowEvent::Resized(_)
+            | winit::event::WindowEvent::ScaleFactorChanged { .. } => {
                 #[cfg(target_arch = "wasm32")]
                 sync_web_canvas(&self.window);
             }
