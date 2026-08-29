@@ -80,11 +80,16 @@ impl Game {
             use winit::platform::web::WindowExtWebSys as _;
             let canvas = window.canvas().expect("winit canvas");
             canvas.set_id(blade_graphics::CANVAS_ID);
+            // CSS size fills the page; the drawing buffer is a separate
+            // canvas.width/height and defaults to 300x150.
+            let _ = canvas.style().set_property("width", "100%");
+            let _ = canvas.style().set_property("height", "100%");
             web_sys::window()
                 .and_then(|win| win.document())
                 .and_then(|doc| doc.body())
                 .and_then(|body| body.append_child(&web_sys::Element::from(canvas)).ok())
                 .expect("couldn't append canvas to document body");
+            sync_web_canvas(&window);
         }
 
         let assets = assets_dir();
@@ -699,6 +704,27 @@ fn parse_cli() -> Cli {
         cli.seconds = Some(10.0);
     }
     cli
+}
+
+/// WebGL's drawing buffer is `canvas.width` x `canvas.height`, not the CSS
+/// size. If those stay at the HTML default (300x150) while Blade renders at
+/// the window's device pixels, present blit crops a corner of the frame and
+/// the chase camera looks like a close-up of the planet.
+#[cfg(target_arch = "wasm32")]
+fn sync_web_canvas(window: &winit::window::Window) {
+    use winit::platform::web::WindowExtWebSys as _;
+    let Some(canvas) = window.canvas() else {
+        return;
+    };
+    let size = window.inner_size();
+    let width = size.width.max(1);
+    let height = size.height.max(1);
+    if canvas.width() != width {
+        canvas.set_width(width);
+    }
+    if canvas.height() != height {
+        canvas.set_height(height);
+    }
 }
 
 fn assets_dir() -> PathBuf {

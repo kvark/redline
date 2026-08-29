@@ -74,6 +74,10 @@ impl Game {
                 self.steer_right = false;
             }
             winit::event::WindowEvent::CloseRequested => return Err(QuitEvent),
+            winit::event::WindowEvent::Resized(_) | winit::event::WindowEvent::ScaleFactorChanged { .. } => {
+                #[cfg(target_arch = "wasm32")]
+                sync_web_canvas(&self.window);
+            }
             winit::event::WindowEvent::RedrawRequested => {
                 let wait = self.on_draw();
                 if let Some(ref mut left) = self.smoke_frames_left {
@@ -116,6 +120,8 @@ impl Game {
     }
 
     fn on_draw(&mut self) -> time::Duration {
+        #[cfg(target_arch = "wasm32")]
+        sync_web_canvas(&self.window);
         self.update_time();
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
