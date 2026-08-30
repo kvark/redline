@@ -173,61 +173,34 @@ fn directional_shadow(world_pos: vec3<f32>, n: vec3<f32>) -> f32 {
     return mix(1.0, visibility, frame_params.shadow_params.y);
 }
 
-fn hash31(p: vec3<f32>) -> f32 {
-    return fract(sin(dot(p, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453);
-}
-
-fn point_light_score(light: PointLight, world_pos: vec3<f32>, n: vec3<f32>) -> f32 {
+fn shade_one_point_light(mat: Material, n: vec3<f32>, v: vec3<f32>, world_pos: vec3<f32>, light: PointLight) -> vec3<f32> {
     let delta = light.pos_radius.xyz - world_pos;
     let dist2 = max(dot(delta, delta), 0.04);
     let dist = sqrt(dist2);
     let range = max(light.pos_radius.w, 0.01);
     let falloff = max(1.0 - dist / range, 0.0);
-    let ldir = delta / dist;
-    let ndotl = max(dot(n, ldir), 0.0);
-    let intensity = max(light.color.x, max(light.color.y, light.color.z));
-    return intensity * falloff * falloff * (0.2 + 0.8 * ndotl);
-}
-
-fn shade_point_light(mat: Material, n: vec3<f32>, v: vec3<f32>, world_pos: vec3<f32>) -> vec3<f32> {
-    let count = min(u32(light_params.count_seed.x), MAX_POINT_LIGHTS);
-    if (count == 0u) {
+    if (falloff <= 0.0) {
         return vec3<f32>(0.0);
     }
-
-    // Weighted reservoir over the submitted lights. Each fragment independently
-    // samples one light with probability proportional to its local score.
-    // TODO: spatial acceleration once scenes carry more local lights than this cap.
-    var chosen = 0u;
-    var weight_sum = 0.0;
-    for (var i = 0u; i < MAX_POINT_LIGHTS; i++) {
-        if (i >= count) {
-            break;
-        }
-        let score = point_light_score(light_params.lights[i], world_pos, n);
-        if (score <= 0.0) {
-            continue;
-        }
-        weight_sum += score;
-        let u = hash31(world_pos + vec3<f32>(f32(i), light_params.count_seed.y, score));
-        if (u * weight_sum < score) {
-            chosen = i;
-        }
-    }
-    if (weight_sum <= 0.0) {
-        return vec3<f32>(0.0);
-    }
-
-    let light = light_params.lights[chosen];
-    let delta = light.pos_radius.xyz - world_pos;
-    let dist2 = max(dot(delta, delta), 0.04);
-    let dist = sqrt(dist2);
-    let range = max(light.pos_radius.w, 0.01);
-    let falloff = max(1.0 - dist / range, 0.0);
     let ldir = delta / dist;
     let brdf = evaluate_brdf(mat, n, v, ldir);
     let atten = falloff * falloff / dist2;
     return (mat.diffuse_albedo * brdf.diffuse + brdf.specular) * light.color.xyz * atten;
+}
+
+fn shade_point_light(mat: Material, n: vec3<f32>, v: vec3<f32>, world_pos: vec3<f32>) -> vec3<f32> {
+    let count = min(u32(light_params.count_seed.x), MAX_POINT_LIGHTS);
+    var total = vec3<f32>(0.0);
+    // Sum the submitted lights. A one-sample reservoir is cheaper, but WebGL
+    // dynamic indexing of UBO struct arrays is unreliable and the missing MIS
+    // weight made crystals look unlit.
+    for (var i = 0u; i < MAX_POINT_LIGHTS; i++) {
+        if (i >= count) {
+            break;
+        }
+        total += shade_one_point_light(mat, n, v, world_pos, light_params.lights[i]);
+    }
+    return total;
 }
 
 @fragment

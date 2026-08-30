@@ -95,9 +95,11 @@ pub fn spawn(
             y: -0.05,
             z: 0.0,
         };
+        // Kenney car-kit bodies already face +Z. race-future in vehicle.ron
+        // uses a 180 yaw; applying that here made opponents drive backwards.
         body_visual.rot = mint::Vector3 {
             x: 0.0,
-            y: 180.0,
+            y: 0.0,
             z: 0.0,
         };
         wheel_visual.model = kit.wheel_model.to_string();

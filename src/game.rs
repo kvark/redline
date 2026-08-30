@@ -755,7 +755,20 @@ fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlan
             scale: 2.4,
             ..Default::default()
         }],
-        colliders: vec![],
+        colliders: vec![blade_engine::config::Collider {
+            density: 1.0,
+            friction: 0.4,
+            restitution: 0.05,
+            shape: blade_engine::config::Shape::Cuboid {
+                half: mint::Vector3 {
+                    x: 0.12,
+                    y: 1.4,
+                    z: 0.45,
+                },
+            },
+            pos: [0.0; 3].into(),
+            rot: [0.0; 3].into(),
+        }],
         additional_mass: None,
     };
     engine.add_object(
@@ -774,7 +787,17 @@ fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlan
             scale: 1.6,
             ..Default::default()
         }],
-        colliders: vec![],
+        colliders: vec![blade_engine::config::Collider {
+            density: 1.0,
+            friction: 0.4,
+            restitution: 0.05,
+            shape: blade_engine::config::Shape::Cylinder {
+                half_height: 0.55,
+                radius: 0.22,
+            },
+            pos: [0.0; 3].into(),
+            rot: [0.0; 3].into(),
+        }],
         additional_mass: None,
     };
     let stride = (planet.track.len() / 14).max(1);
@@ -854,17 +877,36 @@ fn starfield(width: u32, height: u32) -> Vec<[u8; 4]> {
         pixels[(y * width + x) as usize] = color;
     }
 
-    // A distant, small sun with a restrained one-pixel corona.
+    // Disc in the environment map at the directional-light heading so the
+    // sky actually shows a sun, not a single texel.
     let sun = planet::SUN_DIRECTION.normalize();
     let sun_u = (sun.x.atan2(sun.z) / consts::PI + 1.0) * 0.5;
     let sun_v = sun.y.asin() / consts::PI + 0.5;
-    let sun_x = (sun_u * width as f32) as u32 % width;
-    let sun_y = (sun_v * height as f32) as u32 % height;
-    pixels[(sun_y * width + sun_x) as usize] = [255, 236, 205, 255];
-    for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
-        let x = (sun_x as i32 + dx) as u32;
-        let y = (sun_y as i32 + dy) as u32;
-        pixels[(y * width + x) as usize] = [92, 66, 48, 255];
+    let sun_x = sun_u * width as f32;
+    let sun_y = sun_v * height as f32;
+    let radius = (height as f32 * 0.035).max(3.0);
+    let glow = radius * 2.4;
+    for y in 0..height {
+        for x in 0..width {
+            let mut dx = x as f32 - sun_x;
+            let dy = y as f32 - sun_y;
+            if dx > width as f32 * 0.5 {
+                dx -= width as f32;
+            } else if dx < -(width as f32 * 0.5) {
+                dx += width as f32;
+            }
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > glow {
+                continue;
+            }
+            let core = (1.0 - (dist / radius).clamp(0.0, 1.0)).powf(2.0);
+            let halo = (1.0 - (dist / glow).clamp(0.0, 1.0)).powf(1.6) * 0.35;
+            let t = (core + halo).clamp(0.0, 1.0);
+            let dst = &mut pixels[(y * width + x) as usize];
+            dst[0] = dst[0].saturating_add((255.0 * t) as u8);
+            dst[1] = dst[1].saturating_add((220.0 * t) as u8);
+            dst[2] = dst[2].saturating_add((160.0 * t) as u8);
+        }
     }
     pixels
 }
