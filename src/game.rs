@@ -95,7 +95,14 @@ impl Game {
         let assets = assets_dir();
         let generated = assets.join("generated");
         let planet_cfg = config::Planet::default();
+        let gen_started = time::Instant::now();
         let planet = planet::generate(planet_cfg, &generated);
+        log::info!(
+            "generated planet in {:.1}ms ({} decorations, {} track samples)",
+            gen_started.elapsed().as_secs_f32() * 1e3,
+            planet.decorations.len(),
+            planet.track.len()
+        );
 
         let ray_trace = env::var_os("REDLINE_RT").is_some();
         let mut engine = blade_engine::Engine::new(
@@ -173,6 +180,7 @@ impl Game {
             }],
             additional_mass: None,
         };
+        let objects_started = time::Instant::now();
         let _planet_handle = engine.add_object(
             &planet_object,
             blade_engine::Transform::default(),
@@ -219,6 +227,10 @@ impl Game {
         }
 
         spawn_props(&mut engine, &planet);
+        log::info!(
+            "spawned colliders in {:.1}ms",
+            objects_started.elapsed().as_secs_f32() * 1e3
+        );
 
         let veh_config: config::Vehicle =
             ron::de::from_bytes(&read_asset_bytes(&assets.join("vehicle.ron")))
@@ -336,7 +348,17 @@ impl Game {
                 dt,
             );
         }
+        let physics_started = time::Instant::now();
         self.engine.update(dt);
+        let physics_ms = physics_started.elapsed().as_secs_f32() * 1e3;
+        if cfg!(debug_assertions) && self.frame_index.is_multiple_of(20) {
+            log::debug!(
+                "engine.update {:.1}ms (sim dt={:.1}ms, ~{} physics steps)",
+                physics_ms,
+                dt * 1e3,
+                (dt / 0.01).ceil() as u32
+            );
+        }
         self.apply_vehicle_bumps();
         self.recovered_this_step = u8::from(self.vehicle.recover_if_needed(
             &mut self.engine,
