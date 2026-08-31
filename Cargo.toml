@@ -41,6 +41,14 @@ web-sys = { version = "0.3", features = [
 ] }
 web-time = "1"
 
+# Rapier/parry/nalgebra are unusable at opt-level 0. Keep Redline itself
+# easy to debug, optimize every dependency.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(gles)'] }
 trivial_casts = "warn"

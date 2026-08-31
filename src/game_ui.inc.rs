@@ -124,8 +124,11 @@ impl Game {
     fn on_draw(&mut self) -> time::Duration {
         #[cfg(target_arch = "wasm32")]
         sync_web_canvas(&self.window);
+        let frame_started = time::Instant::now();
         self.update_time();
+        let sim_ms = frame_started.elapsed().as_secs_f32() * 1e3;
 
+        let ui_started = time::Instant::now();
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let egui_context = self.egui_state.egui_ctx().clone();
         let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
@@ -149,6 +152,8 @@ impl Game {
             .egui_state
             .egui_ctx()
             .tessellate(egui_output.shapes, egui_output.pixels_per_point);
+        let ui_ms = ui_started.elapsed().as_secs_f32() * 1e3;
+        let render_started = time::Instant::now();
         self.engine.render(
             &camera,
             &primitives,
@@ -156,6 +161,15 @@ impl Game {
             self.window.inner_size(),
             self.window.scale_factor() as f32,
         );
+        if cfg!(debug_assertions) && self.frame_index.is_multiple_of(20) {
+            log::debug!(
+                "cpu frame sim={:.1}ms ui={:.1}ms render={:.1}ms total={:.1}ms",
+                sim_ms,
+                ui_ms,
+                render_started.elapsed().as_secs_f32() * 1e3,
+                frame_started.elapsed().as_secs_f32() * 1e3
+            );
+        }
         egui_output.viewport_output[&self.egui_viewport_id].repaint_delay
     }
 
