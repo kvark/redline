@@ -906,8 +906,8 @@ fn starfield(width: u32, height: u32) -> Vec<[u8; 4]> {
     let sun_v = sun.y.asin() / consts::PI + 0.5;
     let sun_x = sun_u * width as f32;
     let sun_y = sun_v * height as f32;
-    let radius = (height as f32 * 0.035).max(3.0);
-    let glow = radius * 2.4;
+    let radius = (height as f32 * 0.055).max(5.0);
+    let glow = radius * 2.8;
     for y in 0..height {
         for x in 0..width {
             let mut dx = x as f32 - sun_x;

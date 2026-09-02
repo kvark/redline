@@ -184,7 +184,9 @@ fn shade_one_point_light(mat: Material, n: vec3<f32>, v: vec3<f32>, world_pos: v
     }
     let ldir = delta / dist;
     let brdf = evaluate_brdf(mat, n, v, ldir);
-    let atten = falloff * falloff / dist2;
+    // Radius already cuts the light off. Extra /dist2 left even nearby
+    // crystals too dim to read on the ground.
+    let atten = falloff * falloff;
     return (mat.diffuse_albedo * brdf.diffuse + brdf.specular) * light.color.xyz * atten;
 }
 
