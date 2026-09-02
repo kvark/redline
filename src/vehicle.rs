@@ -279,6 +279,13 @@ pub fn spawn(
     vehicle
 }
 
+/// 1 when the wheels should track straight, 0 at/above a small steer deadzone.
+fn straight_line_hold(steering_angle: f32) -> f32 {
+    let deadzone = 0.04;
+    let t = (steering_angle.abs() / deadzone).min(1.0);
+    1.0 - t * t
+}
+
 impl Vehicle {
     pub fn drive(
         &mut self,
@@ -306,7 +313,9 @@ impl Vehicle {
         // the motion; this is a contact assist so high-speed steering still bites
         // on a sphere where the tire patch is tiny.
         let wheelbase = 1.5;
-        let desired_yaw = forward_speed * steering_angle / wheelbase;
+        let hold = straight_line_hold(steering_angle);
+        let steer_for_yaw = steering_angle * (1.0 - hold);
+        let desired_yaw = forward_speed * steer_for_yaw / wheelbase;
         for wheel in self.wheels.iter() {
             let wheel_speed = target_speed + desired_yaw * wheel.lateral;
             engine.set_joint_motor(
@@ -319,16 +328,31 @@ impl Vehicle {
                 engine.set_joint_motor(
                     handle,
                     blade_engine::JointAxis::AngularY,
-                    steering_angle,
+                    steer_for_yaw,
                     0.0,
                 );
             }
         }
 
-        let yaw_error = desired_yaw - angular.dot(up);
-        if yaw_error.abs() > 1e-4 && forward.length_squared() > 1e-5 {
-            let assist = up * yaw_error * self.body_mass * 1.1 * dt.min(0.05);
-            engine.apply_angular_impulse(self.body_handle, assist.into());
+        let step = dt.min(0.05);
+        let yaw_rate = angular.dot(up);
+        if forward.length_squared() > 1e-5 {
+            // Hands-off: damp yaw and sideslip instead of P-tracking a
+            // bicycle yaw of zero, which weaves after bumps.
+            let yaw_error = desired_yaw - yaw_rate;
+            let yaw_damp = -yaw_rate * 2.6 * hold;
+            let yaw_turn = yaw_error * 1.1 * (1.0 - hold);
+            engine.apply_angular_impulse(
+                self.body_handle,
+                (up * (yaw_damp + yaw_turn) * self.body_mass * step).into(),
+            );
+            let lateral = linear - forward * forward_speed - up * linear.dot(up);
+            if hold > 0.0 && lateral.length_squared() > 1e-6 {
+                engine.apply_linear_impulse(
+                    self.body_handle,
+                    (-lateral * self.body_mass * 4.2 * hold * step).into(),
+                );
+            }
         }
 
         // If the tires have lost the ground (beached on a rock, hung on a lip),
@@ -336,7 +360,7 @@ impl Vehicle {
         // replacing ordinary wheel drive.
         if forward.length_squared() > 1e-5 && target_speed.abs() > 2.0 && forward_speed.abs() < 0.9
         {
-            let shove = forward * target_speed.signum() * self.body_mass * 7.0 * dt.min(0.05);
+            let shove = forward * target_speed.signum() * self.body_mass * 7.0 * step;
             engine.apply_linear_impulse(self.body_handle, shove.into());
         }
     }
@@ -681,6 +705,14 @@ mod tests {
     #[test]
     fn wheel_omega_matches_target_speed() {
         assert!((wheel_omega(28.0, 0.28) - 100.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn straight_line_hold_is_full_when_centered() {
+        assert_eq!(straight_line_hold(0.0), 1.0);
+        assert!(straight_line_hold(0.01) > 0.9);
+        assert_eq!(straight_line_hold(0.04), 0.0);
+        assert_eq!(straight_line_hold(-0.5), 0.0);
     }
 
     #[test]
