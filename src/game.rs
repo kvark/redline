@@ -136,17 +136,15 @@ impl Game {
                 z: 0.035,
             },
             space_sky: true,
-            directional_shadows: if cfg!(target_arch = "wasm32") {
-                None
-            } else {
-                Some(blade_render::DirectionalShadowConfig {
-                    resolution: 512,
-                    distance: 52.0,
-                    depth: 220.0,
-                    strength: 0.9,
-                    normal_bias: 0.07,
-                })
-            },
+            // Blade #381 attaches `raster_shadow_fs` on wasm32/GLES so WebGL
+            // can link the depth pass. Same map as native.
+            directional_shadows: Some(blade_render::DirectionalShadowConfig {
+                resolution: 512,
+                distance: 52.0,
+                depth: 220.0,
+                strength: 0.9,
+                normal_bias: 0.07,
+            }),
             ..Default::default()
         });
         // A higher resolution environment keeps individual stars point-like instead of
