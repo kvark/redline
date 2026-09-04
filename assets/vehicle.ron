@@ -30,7 +30,7 @@
         ),
         collider: (
             density: 80.0,
-            friction: 1.85,
+            friction: 1.15,
             restitution: 0.0,
             rot: (0, 0, 90),
             shape: Cylinder(
@@ -47,7 +47,7 @@
     ),
     // Velocity-motor damping on wheel spin. Too high and throttle slams;
     // too low and the car will not hold speed on the climb of the sphere.
-    drive_factor: 90.0,
+    drive_factor: 55.0,
     jump_impulse: 14,
     roll_impulse: 10,
     body_mass: 130.0,

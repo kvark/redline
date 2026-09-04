@@ -7,7 +7,9 @@ use std::{
 use crate::{config, glb};
 
 const GOLDEN_ANGLE: f32 = 2.399_963_2;
-pub const SUN_DIRECTION: glam::Vec3 = glam::Vec3::new(0.45, 0.72, 0.28);
+// Lon 0 of the lap is +Z. A polar sun left the equatorial track in dusk;
+// this heading is high over the start line with enough Y for shadows.
+pub const SUN_DIRECTION: glam::Vec3 = glam::Vec3::new(0.32, 0.38, 0.87);
 
 #[derive(Clone, Copy)]
 pub struct TrackSample {
@@ -102,11 +104,11 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
     let planet_model = out_dir.join("mars.glb");
     let mut surface_meshes = Vec::new();
     for (mesh, look) in [
-        (dust, ([0.43, 0.19, 0.10, 1.0], 0.0, 0.96)),
-        (lowlands, ([0.15, 0.075, 0.065, 1.0], 0.02, 0.98)),
-        (basalt, ([0.095, 0.085, 0.09, 1.0], 0.06, 0.88)),
-        (iron, ([0.31, 0.105, 0.055, 1.0], 0.12, 0.74)),
-        (track_mesh, ([0.27, 0.12, 0.075, 1.0], 0.0, 0.82)),
+        (dust, ([0.52, 0.26, 0.13, 1.0], 0.0, 0.96)),
+        (lowlands, ([0.24, 0.12, 0.09, 1.0], 0.02, 0.98)),
+        (basalt, ([0.14, 0.12, 0.12, 1.0], 0.06, 0.88)),
+        (iron, ([0.40, 0.15, 0.07, 1.0], 0.12, 0.74)),
+        (track_mesh, ([0.36, 0.17, 0.10, 1.0], 0.0, 0.82)),
     ] {
         if !mesh.is_empty() {
             surface_meshes.push(mesh.finish(look.0, look.1, look.2, [0.0; 3]));
