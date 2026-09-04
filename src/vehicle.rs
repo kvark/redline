@@ -2,7 +2,7 @@ use std::{f32::consts, mem, ops};
 
 use crate::{config, planet};
 
-pub const SPAWN_HOVER: f32 = 0.55;
+pub const SPAWN_HOVER: f32 = 0.42;
 
 #[derive(Clone)]
 pub struct Wheel {
@@ -183,7 +183,7 @@ pub fn spawn(
                     motor: Some(blade_engine::config::Motor {
                         stiffness: 0.0,
                         damping: veh_config.drive_factor,
-                        max_force: 2800.0,
+                        max_force: 240.0,
                     }),
                 }),
                 y: None,
@@ -309,6 +309,7 @@ impl Vehicle {
         let linear = glam::Vec3::from(linear);
         let angular = glam::Vec3::from(angular);
         let forward_speed = linear.dot(forward);
+        let yaw_rate = angular.dot(up);
         // Bicycle-model yaw for a 1.5m wheelbase. The wheel motors supply most of
         // the motion; this is a contact assist so high-speed steering still bites
         // on a sphere where the tire patch is tiny.
@@ -316,8 +317,11 @@ impl Vehicle {
         let hold = straight_line_hold(steering_angle);
         let steer_for_yaw = steering_angle * (1.0 - hold);
         let desired_yaw = forward_speed * steer_for_yaw / wheelbase;
+        // Hands-off: spin inside/outside wheels against measured yaw so a
+        // locked axle on the sphere cannot inject a heading change.
+        let wheel_yaw = desired_yaw - yaw_rate * 1.2 * hold;
         for wheel in self.wheels.iter() {
-            let wheel_speed = target_speed + desired_yaw * wheel.lateral;
+            let wheel_speed = target_speed + wheel_yaw * wheel.lateral;
             engine.set_joint_motor(
                 wheel.spin_joint,
                 blade_engine::JointAxis::AngularX,
@@ -335,12 +339,11 @@ impl Vehicle {
         }
 
         let step = dt.min(0.05);
-        let yaw_rate = angular.dot(up);
         if forward.length_squared() > 1e-5 {
             // Hands-off: damp yaw and sideslip instead of P-tracking a
             // bicycle yaw of zero, which weaves after bumps.
             let yaw_error = desired_yaw - yaw_rate;
-            let yaw_damp = -yaw_rate * 2.6 * hold;
+            let yaw_damp = -yaw_rate * 7.5 * hold;
             let yaw_turn = yaw_error * 1.1 * (1.0 - hold);
             engine.apply_angular_impulse(
                 self.body_handle,
@@ -350,7 +353,7 @@ impl Vehicle {
             if hold > 0.0 && lateral.length_squared() > 1e-6 {
                 engine.apply_linear_impulse(
                     self.body_handle,
-                    (-lateral * self.body_mass * 4.2 * hold * step).into(),
+                    (-lateral * self.body_mass * 6.0 * hold * step).into(),
                 );
             }
         }
@@ -372,8 +375,8 @@ impl Vehicle {
         }
     }
 
-    /// Keep the chassis from settling inverted on a sphere. Yaw and ordinary
-    /// roll from the suspension are left to the joints.
+    /// Keep the chassis from settling inverted on a sphere. Yaw is left to
+    /// the driver; pitch/roll track the changing radial up as we drive.
     pub fn apply_stability(&self, engine: &mut blade_engine::Engine, dt: f32) {
         let pose = self.pose(engine);
         let radial_up = pose.position.normalize_or_zero();
@@ -382,10 +385,15 @@ impl Vehicle {
             return;
         }
 
-        let (_, angular) = engine.get_velocity(self.body_handle);
+        let (linear, angular) = engine.get_velocity(self.body_handle);
+        let linear = glam::Vec3::from(linear);
         let angular = glam::Vec3::from(angular);
+        let radius = pose.position.length().max(1.0);
+        // Angular velocity that tracks radial-up as we drive around the sphere.
+        let geodesic = radial_up.cross(linear) / radius;
         let yaw = radial_up * angular.dot(radial_up);
         let roll_pitch = angular - yaw;
+        let roll_pitch_error = roll_pitch - geodesic;
         let error_axis = body_up.cross(radial_up);
         let upright = body_up.dot(radial_up);
         let correction_axis = if error_axis.length_squared() < 1e-5 && upright < 0.0 {
@@ -394,14 +402,14 @@ impl Vehicle {
             error_axis
         };
         let strength = if upright < 0.15 {
-            14.0
+            18.0
         } else if upright < 0.55 {
-            5.0
+            9.0
         } else {
-            1.6
+            4.5
         };
         let impulse =
-            (correction_axis * strength - roll_pitch * 2.2) * self.body_mass * dt.min(0.05);
+            (correction_axis * strength - roll_pitch_error * 3.4) * self.body_mass * dt.min(0.05);
         engine.apply_angular_impulse(self.body_handle, impulse.into());
     }
 

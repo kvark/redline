@@ -121,30 +121,36 @@ impl Game {
             },
         );
         engine.set_gravity(0.0);
-        engine.set_average_luminosity(0.18);
+        engine.set_average_luminosity(0.45);
         engine.set_raster_config(blade_render::RasterConfig {
             clear_color: blade_graphics::TextureColor::OpaqueBlack,
             light_dir: planet::SUN_DIRECTION.into(),
+            // Lambert is /π, so these are illuminance. The previous 4.2/0.07
+            // pair left equatorial terrain at ~0.15 linear after Reinhard.
             light_color: mint::Vector3 {
-                x: 4.2,
-                y: 3.1,
-                z: 2.2,
+                x: 12.0,
+                y: 9.2,
+                z: 6.5,
             },
             ambient_color: mint::Vector3 {
-                x: 0.07,
-                y: 0.045,
-                z: 0.035,
+                x: 0.46,
+                y: 0.32,
+                z: 0.24,
             },
             space_sky: true,
             // Blade #381 attaches `raster_shadow_fs` on wasm32/GLES so WebGL
             // can link the depth pass. Same map as native.
-            directional_shadows: Some(blade_render::DirectionalShadowConfig {
-                resolution: 512,
-                distance: 52.0,
-                depth: 220.0,
-                strength: 0.9,
-                normal_bias: 0.07,
-            }),
+            directional_shadows: if env::var_os("REDLINE_NO_SHADOWS").is_some() {
+                None
+            } else {
+                Some(blade_render::DirectionalShadowConfig {
+                    resolution: 512,
+                    distance: 52.0,
+                    depth: 220.0,
+                    strength: 0.72,
+                    normal_bias: 0.07,
+                })
+            },
             ..Default::default()
         });
         // A higher resolution environment keeps individual stars point-like instead of
@@ -768,6 +774,7 @@ fn relative_model(assets: &std::path::Path, model: &std::path::Path) -> String {
 
 fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlanet) {
     let start = &planet.track[0];
+    let start_side = start.normal.cross(start.tangent).normalize_or_zero();
     let flag = blade_engine::config::Object {
         name: "start-flag".to_string(),
         visuals: vec![blade_engine::config::Visual {
@@ -794,7 +801,12 @@ fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlan
     engine.add_object(
         &flag,
         blade_engine::Transform {
-            position: (start.position + start.normal * 0.2).into(),
+            // Keep the start marker off the racing line; a center-line pole
+            // yaws a full-throttle launch into the weeds.
+            position: (start.position
+                + start.normal * 0.2
+                + start_side * (planet.track_width * 0.48))
+                .into(),
             orientation: planet::surface_quat(start.normal, start.tangent).into(),
         },
         blade_engine::DynamicInput::Empty,
