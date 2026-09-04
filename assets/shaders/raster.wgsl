@@ -237,7 +237,10 @@ fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     let local = shade_point_light(mat, n, v, input.world_pos);
     let color = ambient + light + local + emissive;
 
-    let mapped = color / (color + vec3<f32>(1.0));
+    // Reinhard with a bit of exposure so midtones survive the /π Lambert term
+    // without blowing the sun disc or crystal emissive.
+    let exposed = color * 1.7;
+    let mapped = exposed / (exposed + vec3<f32>(1.0));
     return vec4<f32>(encode_surface_color(mapped, frame_params.settings.y > 0.5), 1.0);
 }
 
