@@ -7,7 +7,9 @@ use std::{
 use crate::{config, glb};
 
 const GOLDEN_ANGLE: f32 = 2.399_963_2;
-pub const SUN_DIRECTION: glam::Vec3 = glam::Vec3::new(0.45, 0.72, 0.28);
+// The circuit starts around +Z near the equator. Aim the key light over the
+// first sector instead of toward the pole, where it left the road at dusk.
+pub const SUN_DIRECTION: glam::Vec3 = glam::Vec3::new(0.32, 0.38, 0.87);
 
 #[derive(Clone, Copy)]
 pub struct TrackSample {
@@ -31,6 +33,7 @@ pub struct GeneratedPlanet {
     pub track_width: f32,
     pub track: Vec<TrackSample>,
     pub planet_model: PathBuf,
+    pub track_detail_model: PathBuf,
     pub decorations: Vec<Decoration>,
 }
 
@@ -70,16 +73,22 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
     let mut basalt = MeshBuilder::new("basalt-highlands");
     let mut iron = MeshBuilder::new("iron-outcrops");
     let mut track_mesh = MeshBuilder::new("mars-track");
+    // One normal per shared icosphere vertex keeps the rendered ground smooth
+    // across material boundaries. Physics still uses the exact displaced mesh.
+    let surface_normals = compute_surface_normals(&displaced, &faces);
     for face in faces.iter() {
         let a = displaced[face[0] as usize];
         let b = displaced[face[1] as usize];
         let c = displaced[face[2] as usize];
+        let na = surface_normals[face[0] as usize];
+        let nb = surface_normals[face[1] as usize];
+        let nc = surface_normals[face[2] as usize];
         let trackish = (track_weights[face[0] as usize] > 0.45) as u8
             + (track_weights[face[1] as usize] > 0.45) as u8
             + (track_weights[face[2] as usize] > 0.45) as u8
             >= 2;
         if trackish {
-            track_mesh.push_triangle(a, b, c, config.radius);
+            track_mesh.push_smooth_triangle(a, b, c, na, nb, nc);
         } else {
             let center = (a + b + c) / 3.0;
             let relative_height = (center.length() - config.radius) / config.height_amp;
@@ -88,13 +97,13 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
                 3,
             );
             if relative_height < -0.16 {
-                lowlands.push_triangle(a, b, c, config.radius);
+                lowlands.push_smooth_triangle(a, b, c, na, nb, nc);
             } else if relative_height > 0.48 {
-                basalt.push_triangle(a, b, c, config.radius);
+                basalt.push_smooth_triangle(a, b, c, na, nb, nc);
             } else if material_noise > 0.68 {
-                iron.push_triangle(a, b, c, config.radius);
+                iron.push_smooth_triangle(a, b, c, na, nb, nc);
             } else {
-                dust.push_triangle(a, b, c, config.radius);
+                dust.push_smooth_triangle(a, b, c, na, nb, nc);
             }
         }
     }
@@ -102,11 +111,11 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
     let planet_model = out_dir.join("mars.glb");
     let mut surface_meshes = Vec::new();
     for (mesh, look) in [
-        (dust, ([0.43, 0.19, 0.10, 1.0], 0.0, 0.96)),
-        (lowlands, ([0.15, 0.075, 0.065, 1.0], 0.02, 0.98)),
-        (basalt, ([0.095, 0.085, 0.09, 1.0], 0.06, 0.88)),
-        (iron, ([0.31, 0.105, 0.055, 1.0], 0.12, 0.74)),
-        (track_mesh, ([0.27, 0.12, 0.075, 1.0], 0.0, 0.82)),
+        (dust, ([0.52, 0.26, 0.13, 1.0], 0.0, 0.96)),
+        (lowlands, ([0.24, 0.12, 0.09, 1.0], 0.02, 0.98)),
+        (basalt, ([0.14, 0.12, 0.12, 1.0], 0.06, 0.88)),
+        (iron, ([0.40, 0.15, 0.07, 1.0], 0.12, 0.74)),
+        (track_mesh, ([0.36, 0.17, 0.10, 1.0], 0.0, 0.82)),
     ] {
         if !mesh.is_empty() {
             surface_meshes.push(mesh.finish(look.0, look.1, look.2, [0.0; 3]));
@@ -114,10 +123,11 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
     }
     glb::write_glb(&planet_model, &surface_meshes).expect("failed to write planet glb");
 
+    let track = sample_track_surface(&track_dirs, config);
+    let track_detail_model = write_track_details(out_dir, &track, config.track_width);
     let stone_models = write_stone_models(out_dir, config.seed);
     let spire_models = write_spire_models(out_dir, config.seed);
     let crystal_models = write_crystal_models(out_dir, config.seed);
-    let track = sample_track_surface(&track_dirs, config);
     let decorations = place_decorations(
         config,
         &track,
@@ -130,8 +140,71 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
         track_width: config.track_width,
         track,
         planet_model,
+        track_detail_model,
         decorations,
     }
+}
+
+fn write_track_details(out_dir: &Path, track: &[TrackSample], width: f32) -> PathBuf {
+    let mut warm_curb = MeshBuilder::new("vermillion-curb");
+    let mut cool_curb = MeshBuilder::new("cyan-curb");
+    let mut center_dashes = MeshBuilder::new("center-dashes");
+    let half = width * 0.5;
+    for index in 0..track.len() {
+        let a = track[index];
+        let b = track[(index + 1) % track.len()];
+        let side_a = a.normal.cross(a.tangent).normalize_or_zero();
+        let side_b = b.normal.cross(b.tangent).normalize_or_zero();
+        let curb = if (index / 5).is_multiple_of(2) {
+            &mut warm_curb
+        } else {
+            &mut cool_curb
+        };
+        for sign in [-1.0f32, 1.0] {
+            push_surface_band(
+                curb,
+                a,
+                b,
+                side_a,
+                side_b,
+                sign * (half - 0.42),
+                sign * (half - 0.10),
+                0.045,
+            );
+        }
+
+        // Three samples on, three off gives ~6 m dashes at this planet size.
+        if index % 6 < 3 {
+            push_surface_band(&mut center_dashes, a, b, side_a, side_b, -0.07, 0.07, 0.052);
+        }
+    }
+    let meshes = [
+        warm_curb.finish([0.92, 0.12, 0.025, 1.0], 0.02, 0.64, [0.08, 0.006, 0.0]),
+        cool_curb.finish([0.025, 0.42, 0.82, 1.0], 0.04, 0.58, [0.0, 0.025, 0.08]),
+        center_dashes.finish([0.90, 0.62, 0.20, 1.0], 0.01, 0.70, [0.035, 0.018, 0.0]),
+    ];
+    let path = out_dir.join("track-details.glb");
+    glb::write_glb(&path, &meshes).expect("track details glb");
+    path
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_surface_band(
+    mesh: &mut MeshBuilder,
+    a: TrackSample,
+    b: TrackSample,
+    side_a: glam::Vec3,
+    side_b: glam::Vec3,
+    offset_a: f32,
+    offset_b: f32,
+    lift: f32,
+) {
+    let a0 = a.position + side_a * offset_a + a.normal * lift;
+    let a1 = a.position + side_a * offset_b + a.normal * lift;
+    let b0 = b.position + side_b * offset_a + b.normal * lift;
+    let b1 = b.position + side_b * offset_b + b.normal * lift;
+    mesh.push_smooth_triangle(a0, b0, b1, a.normal, b.normal, b.normal);
+    mesh.push_smooth_triangle(a0, b1, a1, a.normal, b.normal, a.normal);
 }
 
 pub fn track_progress(position: glam::Vec3, track: &[TrackSample]) -> (usize, f32) {
@@ -139,7 +212,7 @@ pub fn track_progress(position: glam::Vec3, track: &[TrackSample]) -> (usize, f3
     let mut best_i = 0usize;
     let mut best_dot = -1.0f32;
     for (index, sample) in track.iter().enumerate() {
-        let dot = dir.dot(sample.normal);
+        let dot = dir.dot(sample.position.normalize_or_zero());
         if dot > best_dot {
             best_dot = dot;
             best_i = index;
@@ -184,19 +257,31 @@ fn build_track_dirs(count: usize, lat_amp: f32) -> Vec<glam::Vec3> {
 }
 
 fn sample_track_surface(dirs: &[glam::Vec3], config: config::Planet) -> Vec<TrackSample> {
-    let mut samples = Vec::with_capacity(dirs.len());
-    for (index, dir) in dirs.iter().copied().enumerate() {
-        let (height, _) = sample_height(dir, config, dirs);
-        let next = dirs[(index + 1) % dirs.len()];
-        let position = dir * height;
-        let tangent = (next * height - position).normalize_or_zero();
-        samples.push(TrackSample {
-            position,
-            tangent,
-            normal: dir,
-        });
-    }
-    samples
+    let positions = dirs
+        .iter()
+        .copied()
+        .map(|dir| dir * sample_height(dir, config, dirs).0)
+        .collect::<Vec<_>>();
+    positions
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, position)| {
+            let prev = positions[(index + positions.len() - 1) % positions.len()];
+            let next = positions[(index + 1) % positions.len()];
+            // Central differences include the track's real climb/descent. The
+            // old `next * current_height` tangent silently discarded it.
+            let tangent = (next - prev).normalize_or_zero();
+            let radial = position.normalize_or_zero();
+            let side = radial.cross(tangent).normalize_or_zero();
+            let normal = tangent.cross(side).normalize_or_zero();
+            TrackSample {
+                position,
+                tangent,
+                normal,
+            }
+        })
+        .collect()
 }
 
 fn sample_height(dir: glam::Vec3, config: config::Planet, track: &[glam::Vec3]) -> (f32, f32) {
@@ -300,7 +385,10 @@ fn place_decorations(
     spires: &[PathBuf],
     crystals: &[PathBuf],
 ) -> Vec<Decoration> {
-    let track_dirs: Vec<glam::Vec3> = track.iter().map(|s| s.normal).collect();
+    let track_dirs: Vec<glam::Vec3> = track
+        .iter()
+        .map(|sample| sample.position.normalize_or_zero())
+        .collect();
     let keep_angle = (config.track_width * 1.05) / config.radius;
     let mut out = Vec::new();
     let count = config.decoration_count as usize;
@@ -558,6 +646,7 @@ fn crystal_spike(seed: u32, color: [f32; 4], emit: [f32; 3]) -> glb::MeshData {
 struct MeshBuilder {
     name: String,
     positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
     indices: Vec<u32>,
 }
 
@@ -566,6 +655,7 @@ impl MeshBuilder {
         Self {
             name: name.to_string(),
             positions: Vec::new(),
+            normals: Vec::new(),
             indices: Vec::new(),
         }
     }
@@ -578,10 +668,42 @@ impl MeshBuilder {
         } else {
             (a, b, c)
         };
+        let normal = (b - a).cross(c - a).normalize_or_zero();
+        self.push_oriented_triangle(a, b, c, normal, normal, normal);
+    }
+
+    fn push_smooth_triangle(
+        &mut self,
+        a: glam::Vec3,
+        b: glam::Vec3,
+        c: glam::Vec3,
+        na: glam::Vec3,
+        nb: glam::Vec3,
+        nc: glam::Vec3,
+    ) {
+        if (b - a).cross(c - a).dot((a + b + c) / 3.0) < 0.0 {
+            self.push_oriented_triangle(a, c, b, na, nc, nb);
+        } else {
+            self.push_oriented_triangle(a, b, c, na, nb, nc);
+        }
+    }
+
+    fn push_oriented_triangle(
+        &mut self,
+        a: glam::Vec3,
+        b: glam::Vec3,
+        c: glam::Vec3,
+        na: glam::Vec3,
+        nb: glam::Vec3,
+        nc: glam::Vec3,
+    ) {
         let base = self.positions.len() as u32;
         self.positions.push(a.into());
         self.positions.push(b.into());
         self.positions.push(c.into());
+        self.normals.push(na.into());
+        self.normals.push(nb.into());
+        self.normals.push(nc.into());
         self.indices.extend_from_slice(&[base, base + 1, base + 2]);
     }
 
@@ -596,7 +718,6 @@ impl MeshBuilder {
         roughness: f32,
         emissive: [f32; 3],
     ) -> glb::MeshData {
-        let normals = compute_normals(&self.positions, &self.indices);
         let tex_coords = self
             .positions
             .iter()
@@ -611,7 +732,7 @@ impl MeshBuilder {
         glb::MeshData {
             name: self.name,
             positions: self.positions,
-            normals,
+            normals: self.normals,
             tex_coords,
             indices: self.indices,
             base_color,
@@ -622,9 +743,39 @@ impl MeshBuilder {
     }
 }
 
+fn compute_surface_normals(positions: &[glam::Vec3], faces: &[[u32; 3]]) -> Vec<glam::Vec3> {
+    let mut normals = vec![glam::Vec3::ZERO; positions.len()];
+    for face in faces {
+        let a = positions[face[0] as usize];
+        let b = positions[face[1] as usize];
+        let c = positions[face[2] as usize];
+        let mut normal = (b - a).cross(c - a);
+        if normal.dot((a + b + c) / 3.0) < 0.0 {
+            normal = -normal;
+        }
+        for &index in face {
+            normals[index as usize] += normal;
+        }
+    }
+    normals
+        .into_iter()
+        .zip(positions)
+        .map(|(normal, position)| {
+            let normal = normal.normalize_or_zero();
+            if normal.length_squared() < 1e-6 {
+                position.normalize_or_zero()
+            } else {
+                normal
+            }
+        })
+        .collect()
+}
+
 fn compute_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     let mut normals = vec![glam::Vec3::ZERO; positions.len()];
-    for tri in indices.chunks_exact(3) {
+    let (triangles, remainder) = indices.as_chunks::<3>();
+    debug_assert!(remainder.is_empty());
+    for tri in triangles {
         let a = glam::Vec3::from(positions[tri[0] as usize]);
         let b = glam::Vec3::from(positions[tri[1] as usize]);
         let c = glam::Vec3::from(positions[tri[2] as usize]);
@@ -824,7 +975,10 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{angular_distance_to_polyline, build_track_dirs, icosphere, sample_height};
+    use super::{
+        angular_distance_to_polyline, build_track_dirs, icosphere, sample_height,
+        sample_track_surface,
+    };
     use crate::config;
 
     #[test]
@@ -850,6 +1004,25 @@ mod tests {
         let pole = glam::Vec3::Y;
         let dist = angular_distance_to_polyline(pole, &dirs);
         assert!(dist > 0.5);
+    }
+
+    #[test]
+    fn track_frames_follow_elevation_and_stay_orthogonal() {
+        let cfg = config::Planet::default();
+        let dirs = build_track_dirs(256, cfg.track_lat_amp);
+        let track = sample_track_surface(&dirs, cfg);
+        for sample in &track {
+            assert!((sample.tangent.length() - 1.0).abs() < 1e-4);
+            assert!((sample.normal.length() - 1.0).abs() < 1e-4);
+            assert!(sample.normal.dot(sample.position.normalize()) > 0.95);
+            assert!(sample.normal.dot(sample.tangent).abs() < 1e-4);
+        }
+        assert!(
+            track
+                .iter()
+                .any(|sample| sample.tangent.dot(sample.position.normalize()).abs() > 0.005),
+            "track tangents should include real climbs and descents"
+        );
     }
 
     #[test]

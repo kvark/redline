@@ -237,7 +237,11 @@ fn raster_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     let local = shade_point_light(mat, n, v, input.world_pos);
     let color = ambient + light + local + emissive;
 
-    let mapped = color / (color + vec3<f32>(1.0));
+    // Keep the rust-red midtones legible after Lambert's /pi term. This is
+    // intentionally done in the shared raster shader so native and WebGL use
+    // exactly the same exposure before their surface-specific sRGB encoding.
+    let exposed = color * 1.65;
+    let mapped = exposed / (exposed + vec3<f32>(1.0));
     return vec4<f32>(encode_surface_color(mapped, frame_params.settings.y > 0.5), 1.0);
 }
 

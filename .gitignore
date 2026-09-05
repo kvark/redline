@@ -1,4 +1,5 @@
 /target
+/dist
 /asset-cache
 /assets/generated/
 _failure.wgsl

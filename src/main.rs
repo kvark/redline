@@ -78,7 +78,11 @@ fn main() {
 #[cfg(target_arch = "wasm32")]
 fn mount_embedded_assets() {
     use include_dir::{Dir, include_dir};
-    static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
+    // Generated GLBs are created directly in Blade's VFS by planet::generate.
+    // Embedding assets/generated here would duplicate megabytes and make every
+    // native run invalidate the next WASM build.
+    static MODELS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets/models");
+    static SHADERS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets/shaders");
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
     fn walk(dir: &Dir, root: &std::path::Path) {
         for file in dir.files() {
@@ -88,5 +92,10 @@ fn mount_embedded_assets() {
             walk(child, root);
         }
     }
-    walk(&ASSETS, &root);
+    walk(&MODELS, &root.join("models"));
+    walk(&SHADERS, &root.join("shaders"));
+    blade_engine::vfs::mount(
+        root.join("vehicle.ron"),
+        include_bytes!("../assets/vehicle.ron").to_vec(),
+    );
 }

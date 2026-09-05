@@ -14,6 +14,7 @@ pub enum Script {
 }
 
 impl Script {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn parse(name: &str) -> Option<Self> {
         Some(match name {
             "accel" => Self::Accel,
@@ -66,6 +67,7 @@ pub struct Sample {
     pub upright: f32,
     pub off_track: f32,
     pub heading_error: f32,
+    pub wheel_error: f32,
     pub recovered: u8,
 }
 
@@ -90,11 +92,11 @@ impl Recorder {
 
     pub fn finish(&self) {
         let mut body = String::from(
-            "t,throttle,steer,px,py,pz,speed,fwd,lat,yaw,upright,off,head,recovered\n",
+            "t,throttle,steer,px,py,pz,speed,fwd,lat,yaw,upright,off,head,wheel_error,recovered\n",
         );
         for row in self.rows.iter() {
             body.push_str(&format!(
-                "{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{}\n",
+                "{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{}\n",
                 row.t,
                 row.throttle,
                 row.steer,
@@ -108,6 +110,7 @@ impl Recorder {
                 row.upright,
                 row.off_track,
                 row.heading_error,
+                row.wheel_error,
                 row.recovered,
             ));
         }
@@ -140,6 +143,7 @@ fn log_summary(script: Script, rows: &[Sample]) {
         .map(|r| r.off_track)
         .fold(f32::NEG_INFINITY, f32::max);
     let min_upright = rows.iter().map(|r| r.upright).fold(f32::INFINITY, f32::min);
+    let max_wheel_error = rows.iter().map(|r| r.wheel_error).fold(0.0f32, f32::max);
     let recoveries = rows.iter().map(|r| r.recovered as u32).sum::<u32>();
     let stuck = rows.iter().filter(|r| r.speed < 1.0 && r.t > 1.5).count();
     let yaw_sign_flips = rows
@@ -150,7 +154,7 @@ fn log_summary(script: Script, rows: &[Sample]) {
     let end = rows.last().unwrap().position;
     let travelled = start.distance(end);
     log::info!(
-        "trace {} n={} t={:.1}s travelled={:.1} max_speed={:.1} mean_speed={:.1} mean_|lat|={:.2} max_off={:.1} min_upright={:.2} recoveries={} stuck_samples={} yaw_flips={}",
+        "trace {} n={} t={:.1}s travelled={:.1} max_speed={:.1} mean_speed={:.1} mean_|lat|={:.2} max_off={:.1} min_upright={:.2} wheel_error={:.3} recoveries={} stuck_samples={} yaw_flips={}",
         script.as_str(),
         rows.len(),
         rows.last().unwrap().t,
@@ -160,6 +164,7 @@ fn log_summary(script: Script, rows: &[Sample]) {
         mean_lat,
         max_off,
         min_upright,
+        max_wheel_error,
         recoveries,
         stuck,
         yaw_sign_flips,

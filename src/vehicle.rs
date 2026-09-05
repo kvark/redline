@@ -2,7 +2,7 @@ use std::{f32::consts, mem, ops};
 
 use crate::{config, planet};
 
-pub const SPAWN_HOVER: f32 = 0.55;
+pub const SPAWN_HOVER: f32 = 0.42;
 
 #[derive(Clone)]
 pub struct Wheel {
@@ -12,6 +12,8 @@ pub struct Wheel {
     steer_joint: Option<blade_engine::JointHandle>,
     /// Body-space X of the wheel. Negative is left.
     lateral: f32,
+    mount: glam::Vec3,
+    suspension_travel: f32,
 }
 
 pub struct Vehicle {
@@ -22,6 +24,7 @@ pub struct Vehicle {
     pub wheels: Vec<Wheel>,
     wheel_radius: f32,
     wheel_mass: f32,
+    suspender_mass: f32,
     stuck_time: f32,
     inverted_time: f32,
     prev_speed: f32,
@@ -92,7 +95,9 @@ pub fn spawn(
         body_visual.model = kit.body_model.to_string();
         body_visual.pos = mint::Vector3 {
             x: 0.0,
-            y: -0.05,
+            // Kenney bodies carry a +0.15m node offset. Cancel it so their
+            // rocker panels sit around the wheel hubs like the player model.
+            y: -0.22,
             z: 0.0,
         };
         // Kenney car-kit bodies already face +Z. race-future in vehicle.ron
@@ -121,6 +126,12 @@ pub fn spawn(
     }
 
     let wheel_radius = shape_radius(&veh_config.wheel.collider.shape).unwrap_or(0.28);
+    let wheel_mass = shape_volume(&veh_config.wheel.collider.shape)
+        .map(|volume| volume * veh_config.wheel.collider.density)
+        .unwrap_or(8.0);
+    let suspender_mass = shape_volume(&veh_config.suspender.shape)
+        .map(|volume| volume * veh_config.suspender.density)
+        .unwrap_or(0.0);
     let mut vehicle = Vehicle {
         body_handle,
         jump_impulse: veh_config.jump_impulse,
@@ -128,7 +139,8 @@ pub fn spawn(
         body_mass: veh_config.body_mass,
         wheels: Vec::new(),
         wheel_radius,
-        wheel_mass: 8.0,
+        wheel_mass,
+        suspender_mass,
         stuck_time: 0.0,
         inverted_time: 0.0,
         prev_speed: 0.0,
@@ -183,7 +195,9 @@ pub fn spawn(
                     motor: Some(blade_engine::config::Motor {
                         stiffness: 0.0,
                         damping: veh_config.drive_factor,
-                        max_force: 2800.0,
+                        // This is per wheel. A four-figure value slams the
+                        // lightweight tire bodies and excites the joint graph.
+                        max_force: 260.0,
                     }),
                 }),
                 y: None,
@@ -272,6 +286,8 @@ pub fn spawn(
                     None
                 },
                 lateral: wheel_x,
+                mount: local,
+                suspension_travel: axle.max_suspension_offset,
             });
         }
     }
@@ -316,8 +332,12 @@ impl Vehicle {
         let hold = straight_line_hold(steering_angle);
         let steer_for_yaw = steering_angle * (1.0 - hold);
         let desired_yaw = forward_speed * steer_for_yaw / wheelbase;
+        let yaw_rate = angular.dot(up);
+        // Counter measured yaw through differential wheel speed while the
+        // steering is centered. This rejects bumps without fighting a turn.
+        let wheel_yaw = desired_yaw - yaw_rate * 1.2 * hold;
         for wheel in self.wheels.iter() {
-            let wheel_speed = target_speed + desired_yaw * wheel.lateral;
+            let wheel_speed = target_speed + wheel_yaw * wheel.lateral;
             engine.set_joint_motor(
                 wheel.spin_joint,
                 blade_engine::JointAxis::AngularX,
@@ -335,12 +355,11 @@ impl Vehicle {
         }
 
         let step = dt.min(0.05);
-        let yaw_rate = angular.dot(up);
         if forward.length_squared() > 1e-5 {
             // Hands-off: damp yaw and sideslip instead of P-tracking a
             // bicycle yaw of zero, which weaves after bumps.
             let yaw_error = desired_yaw - yaw_rate;
-            let yaw_damp = -yaw_rate * 2.6 * hold;
+            let yaw_damp = -yaw_rate * 7.5 * hold;
             let yaw_turn = yaw_error * 1.1 * (1.0 - hold);
             engine.apply_angular_impulse(
                 self.body_handle,
@@ -350,7 +369,7 @@ impl Vehicle {
             if hold > 0.0 && lateral.length_squared() > 1e-6 {
                 engine.apply_linear_impulse(
                     self.body_handle,
-                    (-lateral * self.body_mass * 4.2 * hold * step).into(),
+                    (-lateral * self.body_mass * 6.0 * hold * step).into(),
                 );
             }
         }
@@ -369,6 +388,9 @@ impl Vehicle {
         self.apply_radial_impulse(engine, self.body_handle, self.body_mass, gravity, dt);
         for wheel in self.wheels.iter() {
             self.apply_radial_impulse(engine, wheel.object, self.wheel_mass, gravity, dt);
+            if let Some(suspender) = wheel.suspender {
+                self.apply_radial_impulse(engine, suspender, self.suspender_mass, gravity, dt);
+            }
         }
     }
 
@@ -382,10 +404,16 @@ impl Vehicle {
             return;
         }
 
-        let (_, angular) = engine.get_velocity(self.body_handle);
+        let (linear, angular) = engine.get_velocity(self.body_handle);
+        let linear = glam::Vec3::from(linear);
         let angular = glam::Vec3::from(angular);
+        let radius = pose.position.length().max(1.0);
+        // Track the rotation of radial-up as the chassis moves around the
+        // sphere. Damping absolute pitch/roll fights this necessary motion.
+        let geodesic = radial_up.cross(linear) / radius;
         let yaw = radial_up * angular.dot(radial_up);
         let roll_pitch = angular - yaw;
+        let roll_pitch_error = roll_pitch - geodesic;
         let error_axis = body_up.cross(radial_up);
         let upright = body_up.dot(radial_up);
         let correction_axis = if error_axis.length_squared() < 1e-5 && upright < 0.0 {
@@ -394,14 +422,14 @@ impl Vehicle {
             error_axis
         };
         let strength = if upright < 0.15 {
-            14.0
+            18.0
         } else if upright < 0.55 {
-            5.0
+            9.0
         } else {
-            1.6
+            4.5
         };
         let impulse =
-            (correction_axis * strength - roll_pitch * 2.2) * self.body_mass * dt.min(0.05);
+            (correction_axis * strength - roll_pitch_error * 3.4) * self.body_mass * dt.min(0.05);
         engine.apply_angular_impulse(self.body_handle, impulse.into());
     }
 
@@ -499,6 +527,23 @@ impl Vehicle {
             linear.dot(forward),
             linear.dot(right),
         )
+    }
+
+    /// Maximum distance by which a wheel has escaped its suspension line.
+    /// Normal compression inside the configured travel does not count.
+    pub fn max_attachment_error(&self, engine: &blade_engine::Engine) -> f32 {
+        let body = Isometry::from(
+            engine.get_object_transform(self.body_handle, blade_engine::Prediction::LastKnown),
+        );
+        let inverse = body.inverse();
+        self.wheels
+            .iter()
+            .map(|wheel| {
+                let world = glam::Vec3::from(engine.get_object_position(wheel.object));
+                let local = inverse.orientation * world + inverse.position;
+                suspension_axis_error(local, wheel.mount, wheel.suspension_travel)
+            })
+            .fold(0.0, f32::max)
     }
 
     /// Lift, reorient, and nudge toward the road when the car is inverted or wedged.
@@ -631,6 +676,31 @@ fn shape_radius(shape: &blade_engine::config::Shape) -> Option<f32> {
     }
 }
 
+fn suspension_axis_error(local: glam::Vec3, mount: glam::Vec3, travel: f32) -> f32 {
+    let delta = local - mount;
+    let y_error = if delta.y < 0.0 {
+        delta.y
+    } else if delta.y > travel {
+        delta.y - travel
+    } else {
+        0.0
+    };
+    glam::Vec3::new(delta.x, y_error, delta.z).length()
+}
+
+fn shape_volume(shape: &blade_engine::config::Shape) -> Option<f32> {
+    Some(match *shape {
+        blade_engine::config::Shape::Ball { radius } => 4.0 / 3.0 * consts::PI * radius.powi(3),
+        blade_engine::config::Shape::Cylinder {
+            half_height,
+            radius,
+        } => 2.0 * consts::PI * radius.powi(2) * half_height,
+        blade_engine::config::Shape::Cuboid { half } => 8.0 * half.x * half.y * half.z,
+        blade_engine::config::Shape::ConvexHull { .. }
+        | blade_engine::config::Shape::TriMesh { .. } => return None,
+    })
+}
+
 fn clone_visual(src: &blade_engine::config::Visual) -> blade_engine::config::Visual {
     blade_engine::config::Visual {
         model: src.model.clone(),
@@ -738,5 +808,21 @@ mod tests {
         assert!((recovered.orientation * glam::Vec3::Y).dot(up) > 0.95);
         assert!(recovered.position.x.abs() < pose.position.x.abs());
         assert!(recovered.position.y > pose.position.y);
+    }
+
+    #[test]
+    fn suspension_error_allows_only_configured_vertical_travel() {
+        let mount = glam::Vec3::new(0.5, -0.1, 0.7);
+        assert_eq!(suspension_axis_error(mount, mount, 0.2), 0.0);
+        assert_eq!(
+            suspension_axis_error(mount + glam::Vec3::Y * 0.15, mount, 0.2),
+            0.0
+        );
+        assert!(
+            (suspension_axis_error(mount + glam::Vec3::X * 0.12, mount, 0.2) - 0.12).abs() < 1e-5
+        );
+        assert!(
+            (suspension_axis_error(mount - glam::Vec3::Y * 0.08, mount, 0.2) - 0.08).abs() < 1e-5
+        );
     }
 }

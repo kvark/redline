@@ -121,19 +121,21 @@ impl Game {
             },
         );
         engine.set_gravity(0.0);
-        engine.set_average_luminosity(0.18);
+        // This tunes the optional path tracer. Raster exposure lives in
+        // raster.wgsl and is shared by Vulkan and WebGL.
+        engine.set_average_luminosity(0.45);
         engine.set_raster_config(blade_render::RasterConfig {
             clear_color: blade_graphics::TextureColor::OpaqueBlack,
             light_dir: planet::SUN_DIRECTION.into(),
             light_color: mint::Vector3 {
-                x: 4.2,
-                y: 3.1,
-                z: 2.2,
+                x: 11.0,
+                y: 8.4,
+                z: 6.0,
             },
             ambient_color: mint::Vector3 {
-                x: 0.07,
-                y: 0.045,
-                z: 0.035,
+                x: 0.38,
+                y: 0.27,
+                z: 0.21,
             },
             space_sky: true,
             // Blade #381 attaches `raster_shadow_fs` on wasm32/GLES so WebGL
@@ -142,7 +144,7 @@ impl Game {
                 resolution: 512,
                 distance: 52.0,
                 depth: 220.0,
-                strength: 0.9,
+                strength: 0.72,
                 normal_bias: 0.07,
             }),
             ..Default::default()
@@ -181,6 +183,23 @@ impl Game {
         let objects_started = time::Instant::now();
         let _planet_handle = engine.add_object(
             &planet_object,
+            blade_engine::Transform::default(),
+            blade_engine::DynamicInput::Empty,
+        );
+        let track_detail_model = relative_model(&assets, &planet.track_detail_model);
+        let track_details = blade_engine::config::Object {
+            name: "track-details".to_string(),
+            visuals: vec![blade_engine::config::Visual {
+                model: track_detail_model,
+                ..Default::default()
+            }],
+            // These strips hover a few centimeters over the collision mesh and
+            // are visual-only, so they cannot introduce new terrain seams.
+            colliders: vec![],
+            additional_mass: None,
+        };
+        engine.add_object(
+            &track_details,
             blade_engine::Transform::default(),
             blade_engine::DynamicInput::Empty,
         );
@@ -458,6 +477,7 @@ impl Game {
                 linear.length(),
                 true,
             ),
+            wheel_error: self.vehicle.max_attachment_error(&self.engine),
             recovered: self.recovered_this_step,
         });
     }
@@ -587,21 +607,20 @@ const KIT_HATCH: vehicle::Kit = vehicle::Kit {
     body_model: "models/hatchback-sports-body.glb",
     wheel_model: "models/wheel-racing.glb",
     tint: [1.0, 0.42, 0.32, 1.0],
-    half_track: 0.32,
+    half_track: 0.59,
 };
-#[allow(dead_code)]
 const KIT_SEDAN: vehicle::Kit = vehicle::Kit {
     body_model: "models/sedan-sports-body.glb",
     wheel_model: "models/wheel-dark.glb",
     tint: [0.42, 0.72, 1.0, 1.0],
-    half_track: 0.32,
+    half_track: 0.59,
 };
-#[allow(dead_code)]
+#[cfg_attr(all(not(target_arch = "wasm32"), debug_assertions), allow(dead_code))]
 const KIT_TAXI: vehicle::Kit = vehicle::Kit {
     body_model: "models/taxi-body.glb",
     wheel_model: "models/wheel-dark.glb",
     tint: [1.0, 1.0, 1.0, 1.0],
-    half_track: 0.32,
+    half_track: 0.69,
 };
 
 fn opponent_specs() -> &'static [OpponentSpec] {
@@ -609,7 +628,7 @@ fn opponent_specs() -> &'static [OpponentSpec] {
     // set so the scene still boots at an interactive rate.
     #[cfg(target_arch = "wasm32")]
     {
-        static SPECS: [OpponentSpec; 2] = [
+        static SPECS: [OpponentSpec; 3] = [
             OpponentSpec {
                 index: 8,
                 lane: -2.1,
@@ -620,6 +639,12 @@ fn opponent_specs() -> &'static [OpponentSpec] {
                 index: 13,
                 lane: 2.0,
                 speed: 14.5,
+                kit: KIT_SEDAN,
+            },
+            OpponentSpec {
+                index: 18,
+                lane: -0.4,
+                speed: 16.5,
                 kit: KIT_TAXI,
             },
         ];
@@ -627,12 +652,20 @@ fn opponent_specs() -> &'static [OpponentSpec] {
     }
     #[cfg(all(not(target_arch = "wasm32"), debug_assertions))]
     {
-        static SPECS: [OpponentSpec; 1] = [OpponentSpec {
-            index: 8,
-            lane: -2.1,
-            speed: 15.5,
-            kit: KIT_HATCH,
-        }];
+        static SPECS: [OpponentSpec; 2] = [
+            OpponentSpec {
+                index: 8,
+                lane: -2.1,
+                speed: 15.5,
+                kit: KIT_HATCH,
+            },
+            OpponentSpec {
+                index: 15,
+                lane: 2.0,
+                speed: 14.5,
+                kit: KIT_SEDAN,
+            },
+        ];
         &SPECS
     }
     #[cfg(all(not(target_arch = "wasm32"), not(debug_assertions)))]
@@ -768,6 +801,7 @@ fn relative_model(assets: &std::path::Path, model: &std::path::Path) -> String {
 
 fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlanet) {
     let start = &planet.track[0];
+    let start_side = start.normal.cross(start.tangent).normalize_or_zero();
     let flag = blade_engine::config::Object {
         name: "start-flag".to_string(),
         visuals: vec![blade_engine::config::Visual {
@@ -794,7 +828,10 @@ fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlan
     engine.add_object(
         &flag,
         blade_engine::Transform {
-            position: (start.position + start.normal * 0.2).into(),
+            position: (start.position
+                + start.normal * 0.2
+                + start_side * (planet.track_width * 0.5 + 1.0))
+                .into(),
             orientation: planet::surface_quat(start.normal, start.tangent).into(),
         },
         blade_engine::DynamicInput::Empty,
@@ -820,13 +857,15 @@ fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlan
         }],
         additional_mass: None,
     };
-    let stride = (planet.track.len() / 14).max(1);
-    for sample in planet.track.iter().step_by(stride) {
+    // Frequent low cones make the edge readable at speed; tall beacons mark
+    // sectors and break up the procedural rock rows.
+    let stride = (planet.track.len() / 28).max(1);
+    for (marker, sample) in planet.track.iter().step_by(stride).enumerate() {
         let side = sample.normal.cross(sample.tangent).normalize_or_zero();
-        let offset = planet.track_width * 0.52;
+        let offset = planet.track_width * 0.5 + 0.8;
         for sign in [-1.0, 1.0] {
             let pos = sample.position + side * (offset * sign) + sample.normal * 0.1;
-            engine.add_object(
+            let handle = engine.add_object(
                 &pylon,
                 blade_engine::Transform {
                     position: pos.into(),
@@ -834,7 +873,152 @@ fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlan
                 },
                 blade_engine::DynamicInput::Empty,
             );
+            let tint = if marker.is_multiple_of(2) {
+                [1.0, 0.48, 0.18, 1.0]
+            } else {
+                [0.25, 0.72, 1.0, 1.0]
+            };
+            engine.set_color_tint(handle, tint);
         }
+    }
+
+    let beacon = blade_engine::config::Object {
+        name: "sector-beacon".to_string(),
+        visuals: vec![blade_engine::config::Visual {
+            model: "models/rock-crystals-large.glb".to_string(),
+            scale: 1.9,
+            ..Default::default()
+        }],
+        colliders: vec![],
+        additional_mass: None,
+    };
+    let sector_stride = (planet.track.len() / 8).max(1);
+    for (sector, sample) in planet.track.iter().step_by(sector_stride).enumerate() {
+        let side = sample.normal.cross(sample.tangent).normalize_or_zero();
+        let sign = if sector.is_multiple_of(2) { -1.0 } else { 1.0 };
+        let beacon_pos =
+            sample.position + side * sign * (planet.track_width * 0.5 + 4.6) + sample.normal * 0.6;
+        let handle = engine.add_object(
+            &beacon,
+            blade_engine::Transform {
+                position: beacon_pos.into(),
+                orientation: planet::surface_quat(sample.normal, sample.tangent).into(),
+            },
+            blade_engine::DynamicInput::Empty,
+        );
+        engine.set_color_tint(
+            handle,
+            if sector.is_multiple_of(2) {
+                [0.32, 1.0, 1.0, 1.0]
+            } else {
+                [1.0, 0.42, 0.24, 1.0]
+            },
+        );
+
+        // A checkered flag on the opposite shoulder makes every sector feel
+        // authored without putting another pole on the racing line.
+        let flag_pos =
+            sample.position - side * sign * (planet.track_width * 0.5 + 1.2) + sample.normal * 0.15;
+        engine.add_object(
+            &flag,
+            blade_engine::Transform {
+                position: flag_pos.into(),
+                orientation: planet::surface_quat(sample.normal, sample.tangent).into(),
+            },
+            blade_engine::DynamicInput::Empty,
+        );
+    }
+
+    spawn_landmarks(engine, planet);
+}
+
+fn spawn_landmarks(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlanet) {
+    struct Landmark {
+        fraction: f32,
+        model: &'static str,
+        scale: f32,
+        side: f32,
+        lift: f32,
+        tint: [f32; 4],
+    }
+    let landmarks = [
+        Landmark {
+            fraction: 0.10,
+            model: "models/rock-tall-a.glb",
+            scale: 4.2,
+            side: -1.0,
+            lift: 1.4,
+            tint: [0.74, 0.42, 0.30, 1.0],
+        },
+        Landmark {
+            fraction: 0.24,
+            model: "models/space-rock.glb",
+            scale: 3.8,
+            side: 1.0,
+            lift: 1.8,
+            tint: [0.62, 0.34, 0.28, 1.0],
+        },
+        Landmark {
+            fraction: 0.38,
+            model: "models/stone-tall-d.glb",
+            scale: 5.0,
+            side: -1.0,
+            lift: 1.7,
+            tint: [0.50, 0.28, 0.24, 1.0],
+        },
+        Landmark {
+            fraction: 0.53,
+            model: "models/crater.glb",
+            scale: 4.6,
+            side: 1.0,
+            lift: 0.1,
+            tint: [0.70, 0.36, 0.22, 1.0],
+        },
+        Landmark {
+            fraction: 0.69,
+            model: "models/rock-crystals.glb",
+            scale: 4.0,
+            side: -1.0,
+            lift: 0.8,
+            tint: [0.30, 0.86, 1.0, 1.0],
+        },
+        Landmark {
+            fraction: 0.84,
+            model: "models/stone-tall-a.glb",
+            scale: 5.4,
+            side: 1.0,
+            lift: 1.8,
+            tint: [0.72, 0.38, 0.27, 1.0],
+        },
+    ];
+    for (index, landmark) in landmarks.iter().enumerate() {
+        let track_index = (landmark.fraction * planet.track.len() as f32) as usize;
+        let sample = planet.track[track_index.min(planet.track.len() - 1)];
+        let side = sample.normal.cross(sample.tangent).normalize_or_zero();
+        let position = sample.position
+            + side * landmark.side * (planet.track_width * 0.5 + 10.0)
+            + sample.normal * landmark.lift;
+        let object = blade_engine::config::Object {
+            name: format!("landmark-{index}"),
+            visuals: vec![blade_engine::config::Visual {
+                model: landmark.model.to_string(),
+                scale: landmark.scale,
+                ..Default::default()
+            }],
+            // They sit well outside the runoff. Keeping them visual-only avoids
+            // a coarse proxy collider snagging a car that is already recovering.
+            colliders: vec![],
+            additional_mass: None,
+        };
+        let handle = engine.add_object(
+            &object,
+            blade_engine::Transform {
+                position: position.into(),
+                orientation: planet::surface_quat(sample.normal, sample.tangent).into(),
+            },
+            blade_engine::DynamicInput::Empty,
+        );
+        engine.set_color_tint(handle, landmark.tint);
     }
 }
 

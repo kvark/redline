@@ -20,6 +20,10 @@
         display: block;
         width: 100%;
         height: 100%;
+        /* WebGL's RGBA8 canvas presents darker than the native sRGB swapchain.
+           Lift display-space midtones after Blade's shared tone map; doing this
+           here also keeps the egui HUD and scene on the same curve. */
+        filter: brightness(1.35) saturate(1.08);
       }
       #boot {
         position: absolute;
