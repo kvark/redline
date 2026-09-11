@@ -170,14 +170,8 @@ fn log_summary(script: Script, rows: &[Sample]) {
         .windows(2)
         .filter(|pair| pair[0].yaw_rate * pair[1].yaw_rate < -0.15)
         .count();
-    let first_off = rows
-        .iter()
-        .find(|r| r.off_track > 0.0)
-        .map(|r| r.t);
-    let max_progress = rows
-        .iter()
-        .map(|r| r.track_progress)
-        .fold(0.0f32, f32::max);
+    let first_off = rows.iter().find(|r| r.off_track > 0.0).map(|r| r.t);
+    let max_progress = rows.iter().map(|r| r.track_progress).fold(0.0f32, f32::max);
     let max_lap = rows.iter().map(|r| r.lap).max().unwrap_or(1);
     let max_cp = rows.iter().map(|r| r.checkpoint).max().unwrap_or(0);
     let start = rows.first().unwrap().position;
