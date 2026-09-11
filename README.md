@@ -43,7 +43,11 @@ xvfb-run -a cargo run --release -- --script offroad --seconds 12
 xvfb-run -a cargo run --release -- --script lap --seconds 12 --record /tmp/redline-lap.csv
 ```
 
-Scripts: `accel` (straight throttle), `steer` (hold left), `offroad` (leave the ribbon then return), `lap` (follow the track). Default CSV path is `/tmp/redline-<script>.csv`.
+Scripts: `accel` (straight throttle), `steer` (hold left), `offroad` (leave the ribbon then return), `lap` (follow the track until a lap completes, or `--seconds`). Default CSV path is `/tmp/redline-<script>.csv`.
+
+Physics uses a fixed 10 ms step with catch-up so lavapipe, a real GPU, and WebGL2 share the same controls/joints regardless of frame time. Scripted runs catch up aggressively so a full lap finishes in seconds of wall time under software raster.
+
+On the web build, the same scripts are available via query string, e.g. `?script=lap&seconds=45`.
 
 ## Web / WASM
 

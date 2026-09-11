@@ -54,9 +54,11 @@ impl PlayerController {
     }
 
     fn command(&self, speed: f32) -> Command {
-        let steering_limit = 0.52 * (1.0 / (1.0 + speed / 70.0)).clamp(0.42, 1.0);
+        // Keep a usable yaw budget at cruise so the equatorial ribbon stays
+        // catchable; full lock still shrinks with speed to avoid spin-outs.
+        let steering_limit = 0.56 * (1.0 / (1.0 + speed / 85.0)).clamp(0.48, 1.0);
         Command {
-            target_speed: self.throttle * 26.0,
+            target_speed: self.throttle * 24.0,
             steering_angle: self.steering * steering_limit,
         }
     }

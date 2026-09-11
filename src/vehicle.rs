@@ -344,16 +344,21 @@ impl Vehicle {
             // bicycle yaw of zero, which weaves after bumps.
             let yaw_error = desired_yaw - yaw_rate;
             let yaw_damp = -yaw_rate * 7.5 * hold;
-            let yaw_turn = yaw_error * 1.1 * (1.0 - hold);
+            // A bit more bite while turning so the sphere's tiny tire patch
+            // can still follow the ribbon's latitude changes.
+            let yaw_turn = yaw_error * 1.45 * (1.0 - hold);
             engine.apply_angular_impulse(
                 self.body_handle,
                 (up * (yaw_damp + yaw_turn) * self.body_mass * step).into(),
             );
             let lateral = linear - forward * forward_speed - up * linear.dot(up);
-            if hold > 0.0 && lateral.length_squared() > 1e-6 {
+            // Hands-off uses strong sideslip kill; while steered keep a milder
+            // grip so the car does not skate off the outside of a bend.
+            let grip = 2.4 + 4.2 * hold;
+            if grip > 0.0 && lateral.length_squared() > 1e-6 {
                 engine.apply_linear_impulse(
                     self.body_handle,
-                    (-lateral * self.body_mass * 6.0 * hold * step).into(),
+                    (-lateral * self.body_mass * grip * step).into(),
                 );
             }
         }
