@@ -16,6 +16,10 @@ git lfs pull
 cargo run --release
 ```
 
+Interactive runs open a pre-race egui menu to pick a vehicle and circuit; Start
+Race begins the lap. `--script` / `--smoke` (and WASM query scripts) skip the menu
+and boot straight into the drive, same as before.
+
 The vehicle is a Rapier joint graph (chassis, four wheels, suspenders). Debug
 builds of that solver are much slower than `--release`; use release for playable
 framerate.
@@ -68,6 +72,6 @@ python3 -m http.server --directory dist
 
 Pushes to `main` build the WASM target and deploy it to GitHub Pages.
 
-Controls: `W/↑` throttle, `S/↓` brake, `A/D` steer, `R` respawn, `Space` jump, `,/.` roll, `Esc` quit.
+Controls: `W/↑` throttle, `S/↓` brake, `A/D` steer, `R` respawn, `Space` jump, `,/.` roll, `Esc` opens the menu while racing (quit from the menu on native).
 
 Kenney models are CC0; licenses are in `assets/licenses/`. Generated planet meshes go to `assets/generated/` and are not committed.

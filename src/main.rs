@@ -21,6 +21,7 @@ mod config;
 mod control;
 mod game;
 mod glb;
+mod menu;
 mod planet;
 mod race;
 mod trace;

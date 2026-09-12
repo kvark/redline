@@ -14,6 +14,7 @@ use web_time as time;
 use crate::ai;
 use crate::config;
 use crate::control;
+use crate::menu;
 use crate::planet;
 use crate::race;
 use crate::trace;
@@ -30,12 +31,18 @@ pub struct Game {
     egui_state: egui_winit::State,
     egui_viewport_id: egui::ViewportId,
     vehicle: vehicle::Vehicle,
+    veh_config: config::Vehicle,
     ai_drivers: Vec<ai::Driver>,
     cam_config: config::Camera,
     planet: planet::GeneratedPlanet,
     planet_cfg: config::Planet,
     race: race::Race,
     spawn: Isometry,
+    world_handles: Vec<blade_engine::ObjectHandle>,
+    in_menu: bool,
+    menu_vehicle: menu::VehicleId,
+    menu_map: menu::MapId,
+    active_map: menu::MapId,
     controller: control::PlayerController,
     throttle_forward: bool,
     throttle_reverse: bool,
@@ -72,7 +79,7 @@ impl Game {
         let window = event_loop
             .create_window(
                 winit::window::Window::default_attributes()
-                    .with_title("Redline — Mars Circuit")
+                    .with_title("Redline")
                     .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0)),
             )
             .unwrap();
@@ -95,16 +102,8 @@ impl Game {
         }
 
         let assets = assets_dir();
-        let generated = assets.join("generated");
-        let planet_cfg = config::Planet::default();
-        let gen_started = time::Instant::now();
-        let planet = planet::generate(planet_cfg, &generated);
-        log::info!(
-            "generated planet in {:.1}ms ({} decorations, {} track samples)",
-            gen_started.elapsed().as_secs_f32() * 1e3,
-            planet.decorations.len(),
-            planet.track.len()
-        );
+        let cli = parse_cli();
+        let in_menu = cli.script.is_none() && cli.smoke_frames.is_none();
 
         let ray_trace = env::var_os("REDLINE_RT").is_some();
         let mut engine = blade_engine::Engine::new(
@@ -165,104 +164,20 @@ impl Game {
         };
         engine.create_environment_map("mars-sky", sky_w, sky_h, &starfield(sky_w, sky_h));
 
-        let planet_rel = relative_model(&assets, &planet.planet_model);
-        let planet_object = blade_engine::config::Object {
-            name: "mars".to_string(),
-            visuals: vec![blade_engine::config::Visual {
-                model: planet_rel.clone(),
-                ..Default::default()
-            }],
-            colliders: vec![blade_engine::config::Collider {
-                density: 1.0,
-                friction: 0.85,
-                restitution: 0.02,
-                shape: blade_engine::config::Shape::TriMesh {
-                    model: planet_rel,
-                    convex: false,
-                    border_radius: 0.0,
-                },
-                pos: [0.0; 3].into(),
-                rot: [0.0; 3].into(),
-            }],
-            additional_mass: None,
-        };
-        let objects_started = time::Instant::now();
-        let _planet_handle = engine.add_object(
-            &planet_object,
-            blade_engine::Transform::default(),
-            blade_engine::DynamicInput::Empty,
-        );
-        for (index, deco) in planet.decorations.iter().enumerate() {
-            let model = relative_model(&assets, &deco.model);
-            let object = blade_engine::config::Object {
-                name: format!("deco-{index}"),
-                visuals: vec![blade_engine::config::Visual {
-                    model,
-                    scale: deco.scale,
-                    ..Default::default()
-                }],
-                colliders: vec![blade_engine::config::Collider {
-                    density: 1.0,
-                    friction: 0.35,
-                    restitution: if deco.kind == planet::DecorationKind::Crystal {
-                        0.08
-                    } else {
-                        0.02
-                    },
-                    shape: blade_engine::config::Shape::ConvexHull {
-                        points: deco
-                            .collider_points
-                            .iter()
-                            .map(|point| (*point).into())
-                            .collect(),
-                        border_radius: 0.025,
-                    },
-                    pos: [0.0; 3].into(),
-                    rot: [0.0; 3].into(),
-                }],
-                additional_mass: None,
-            };
-            let _handle = engine.add_object(
-                &object,
-                blade_engine::Transform {
-                    position: deco.position.into(),
-                    orientation: deco.orientation.into(),
-                },
-                blade_engine::DynamicInput::Empty,
-            );
-        }
-
-        spawn_props(&mut engine, &planet);
-        log::info!(
-            "spawned colliders in {:.1}ms",
-            objects_started.elapsed().as_secs_f32() * 1e3
-        );
+        let active_map = menu::MapId::MarsClassic;
+        let (planet, planet_cfg, world_handles, spawn, race) =
+            populate_world(&mut engine, &assets, active_map);
 
         let veh_config: config::Vehicle =
             ron::de::from_bytes(&read_asset_bytes(&assets.join("vehicle.ron")))
                 .expect("unable to parse vehicle config");
-        let cli = parse_cli();
-        let spawn = vehicle::Vehicle::spawn_pose(&planet.track, vehicle::SPAWN_HOVER);
-        let vehicle = vehicle::spawn(&mut engine, &veh_config, spawn.clone(), None);
+        let menu_vehicle = menu::VehicleId::default();
+        let vehicle = vehicle::spawn(&mut engine, &veh_config, spawn.clone(), menu_vehicle.kit());
         let clear_ai = cli.script.is_some_and(|script| script.clears_ai());
         let ai_drivers = if clear_ai {
             Vec::new()
         } else {
-            opponent_specs()
-                .iter()
-                .copied()
-                .map(|spec| {
-                    ai::Driver::spawn(
-                        &mut engine,
-                        &veh_config,
-                        &planet.track,
-                        spec.index,
-                        spec.lane,
-                        spec.speed,
-                        spec.kit,
-                    )
-                })
-                .collect()
+            spawn_ai_drivers(&mut engine, &veh_config, &planet.track)
         };
 
         let dust = engine.create_particle_system(
@@ -288,11 +203,11 @@ impl Game {
             },
         );
 
-        let race = race::Race::new(&planet.track, config::Race::default());
         log::info!(
-            "drivers ready: player + {} AI (script={:?})",
+            "drivers ready: player + {} AI (script={:?}, menu={})",
             ai_drivers.len(),
-            cli.script.map(|s| s.as_str())
+            cli.script.map(|s| s.as_str()),
+            in_menu
         );
 
         let egui_context = egui::Context::default();
@@ -305,17 +220,23 @@ impl Game {
             last_physics_update: time::Instant::now(),
             last_camera_update: time::Instant::now(),
             last_camera_orient: spawn.orientation,
-            is_paused: false,
+            is_paused: in_menu,
             window,
             egui_state,
             egui_viewport_id,
             vehicle,
+            veh_config,
             ai_drivers,
             cam_config: config::Camera::default(),
             planet,
             planet_cfg,
             race,
             spawn,
+            world_handles,
+            in_menu,
+            menu_vehicle,
+            menu_map: active_map,
+            active_map,
             controller: control::PlayerController::default(),
             throttle_forward: false,
             throttle_reverse: false,
@@ -334,6 +255,62 @@ impl Game {
             physics_accum: 0.0,
             recovered_this_step: 0,
         }
+    }
+
+    fn build_world(&mut self, map: menu::MapId) {
+        for handle in self.world_handles.drain(..) {
+            self.engine.remove_object(handle);
+        }
+        let assets = assets_dir();
+        let (planet, planet_cfg, world_handles, spawn, race) =
+            populate_world(&mut self.engine, &assets, map);
+        self.planet = planet;
+        self.planet_cfg = planet_cfg;
+        self.world_handles = world_handles;
+        self.spawn = spawn;
+        self.race = race;
+        self.active_map = map;
+        self.last_camera_orient = self.spawn.orientation;
+    }
+
+    fn open_menu(&mut self) {
+        self.in_menu = true;
+        self.is_paused = true;
+        self.throttle_forward = false;
+        self.throttle_reverse = false;
+        self.steer_left = false;
+        self.steer_right = false;
+    }
+
+    fn start_race(&mut self) {
+        self.vehicle.despawn(&mut self.engine);
+        for driver in self.ai_drivers.drain(..) {
+            driver.vehicle.despawn(&mut self.engine);
+        }
+        if self.menu_map != self.active_map {
+            self.build_world(self.menu_map);
+        }
+        self.spawn = vehicle::Vehicle::spawn_pose(&self.planet.track, vehicle::SPAWN_HOVER);
+        self.vehicle = vehicle::spawn(
+            &mut self.engine,
+            &self.veh_config,
+            self.spawn.clone(),
+            self.menu_vehicle.kit(),
+        );
+        let clear_ai = self.script.is_some_and(|script| script.clears_ai());
+        if !clear_ai {
+            self.ai_drivers =
+                spawn_ai_drivers(&mut self.engine, &self.veh_config, &self.planet.track);
+        }
+        self.race.reset();
+        self.last_camera_orient = self.spawn.orientation;
+        self.in_menu = false;
+        self.is_paused = false;
+        self.window.set_title(&format!(
+            "Redline — {} / {}",
+            self.menu_vehicle.label(),
+            self.active_map.label()
+        ));
     }
 
     fn update_time(&mut self) {
@@ -646,27 +623,6 @@ struct OpponentSpec {
     kit: vehicle::Kit,
 }
 
-const KIT_HATCH: vehicle::Kit = vehicle::Kit {
-    body_model: "models/hatchback-sports-body.glb",
-    wheel_model: "models/wheel-racing.glb",
-    tint: [1.0, 0.42, 0.32, 1.0],
-    half_track: 0.32,
-};
-#[allow(dead_code)]
-const KIT_SEDAN: vehicle::Kit = vehicle::Kit {
-    body_model: "models/sedan-sports-body.glb",
-    wheel_model: "models/wheel-dark.glb",
-    tint: [0.42, 0.72, 1.0, 1.0],
-    half_track: 0.32,
-};
-#[allow(dead_code)]
-const KIT_TAXI: vehicle::Kit = vehicle::Kit {
-    body_model: "models/taxi-body.glb",
-    wheel_model: "models/wheel-dark.glb",
-    tint: [1.0, 1.0, 1.0, 1.0],
-    half_track: 0.32,
-};
-
 fn opponent_specs() -> &'static [OpponentSpec] {
     // Extra vehicles are a full Rapier joint graph each. Debug keeps a lighter
     // set so the scene still boots at an interactive rate.
@@ -677,13 +633,13 @@ fn opponent_specs() -> &'static [OpponentSpec] {
                 index: 8,
                 lane: -2.1,
                 speed: 15.5,
-                kit: KIT_HATCH,
+                kit: menu::KIT_HATCH,
             },
             OpponentSpec {
                 index: 13,
                 lane: 2.0,
                 speed: 14.5,
-                kit: KIT_TAXI,
+                kit: menu::KIT_TAXI,
             },
         ];
         &SPECS
@@ -694,7 +650,7 @@ fn opponent_specs() -> &'static [OpponentSpec] {
             index: 8,
             lane: -2.1,
             speed: 15.5,
-            kit: KIT_HATCH,
+            kit: menu::KIT_HATCH,
         }];
         &SPECS
     }
@@ -705,19 +661,19 @@ fn opponent_specs() -> &'static [OpponentSpec] {
                 index: 8,
                 lane: -2.1,
                 speed: 15.5,
-                kit: KIT_HATCH,
+                kit: menu::KIT_HATCH,
             },
             OpponentSpec {
                 index: 13,
                 lane: 2.0,
                 speed: 14.5,
-                kit: KIT_SEDAN,
+                kit: menu::KIT_SEDAN,
             },
             OpponentSpec {
                 index: 18,
                 lane: -0.6,
                 speed: 16.5,
-                kit: KIT_TAXI,
+                kit: menu::KIT_TAXI,
             },
         ];
         &SPECS
@@ -871,7 +827,129 @@ fn relative_model(assets: &std::path::Path, model: &std::path::Path) -> String {
         .into_owned()
 }
 
-fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlanet) {
+fn spawn_ai_drivers(
+    engine: &mut blade_engine::Engine,
+    veh_config: &config::Vehicle,
+    track: &[planet::TrackSample],
+) -> Vec<ai::Driver> {
+    opponent_specs()
+        .iter()
+        .copied()
+        .map(|spec| {
+            ai::Driver::spawn(
+                engine, veh_config, track, spec.index, spec.lane, spec.speed, spec.kit,
+            )
+        })
+        .collect()
+}
+
+fn populate_world(
+    engine: &mut blade_engine::Engine,
+    assets: &std::path::Path,
+    map: menu::MapId,
+) -> (
+    planet::GeneratedPlanet,
+    config::Planet,
+    Vec<blade_engine::ObjectHandle>,
+    Isometry,
+    race::Race,
+) {
+    let planet_cfg = map.planet();
+    let generated = assets.join("generated");
+    let gen_started = time::Instant::now();
+    let planet = planet::generate(planet_cfg, &generated);
+    log::info!(
+        "generated {} in {:.1}ms ({} decorations, {} track samples)",
+        map.label(),
+        gen_started.elapsed().as_secs_f32() * 1e3,
+        planet.decorations.len(),
+        planet.track.len()
+    );
+
+    let mut world_handles = Vec::new();
+    let planet_rel = relative_model(assets, &planet.planet_model);
+    let planet_object = blade_engine::config::Object {
+        name: "mars".to_string(),
+        visuals: vec![blade_engine::config::Visual {
+            model: planet_rel.clone(),
+            ..Default::default()
+        }],
+        colliders: vec![blade_engine::config::Collider {
+            density: 1.0,
+            friction: 0.85,
+            restitution: 0.02,
+            shape: blade_engine::config::Shape::TriMesh {
+                model: planet_rel,
+                convex: false,
+                border_radius: 0.0,
+            },
+            pos: [0.0; 3].into(),
+            rot: [0.0; 3].into(),
+        }],
+        additional_mass: None,
+    };
+    let objects_started = time::Instant::now();
+    world_handles.push(engine.add_object(
+        &planet_object,
+        blade_engine::Transform::default(),
+        blade_engine::DynamicInput::Empty,
+    ));
+    for (index, deco) in planet.decorations.iter().enumerate() {
+        let model = relative_model(assets, &deco.model);
+        let object = blade_engine::config::Object {
+            name: format!("deco-{index}"),
+            visuals: vec![blade_engine::config::Visual {
+                model,
+                scale: deco.scale,
+                ..Default::default()
+            }],
+            colliders: vec![blade_engine::config::Collider {
+                density: 1.0,
+                friction: 0.35,
+                restitution: if deco.kind == planet::DecorationKind::Crystal {
+                    0.08
+                } else {
+                    0.02
+                },
+                shape: blade_engine::config::Shape::ConvexHull {
+                    points: deco
+                        .collider_points
+                        .iter()
+                        .map(|point| (*point).into())
+                        .collect(),
+                    border_radius: 0.025,
+                },
+                pos: [0.0; 3].into(),
+                rot: [0.0; 3].into(),
+            }],
+            additional_mass: None,
+        };
+        world_handles.push(engine.add_object(
+            &object,
+            blade_engine::Transform {
+                position: deco.position.into(),
+                orientation: deco.orientation.into(),
+            },
+            blade_engine::DynamicInput::Empty,
+        ));
+    }
+
+    world_handles.extend(spawn_props(engine, &planet));
+    log::info!(
+        "spawned colliders in {:.1}ms",
+        objects_started.elapsed().as_secs_f32() * 1e3
+    );
+
+    let spawn = vehicle::Vehicle::spawn_pose(&planet.track, vehicle::SPAWN_HOVER);
+    let race = race::Race::new(&planet.track, config::Race::default());
+    (planet, planet_cfg, world_handles, spawn, race)
+}
+
+fn spawn_props(
+    engine: &mut blade_engine::Engine,
+    planet: &planet::GeneratedPlanet,
+) -> Vec<blade_engine::ObjectHandle> {
+    let mut handles = Vec::new();
     let start = &planet.track[0];
     let start_side = start.normal.cross(start.tangent).normalize_or_zero();
     let flag = blade_engine::config::Object {
@@ -897,18 +975,20 @@ fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlan
         }],
         additional_mass: None,
     };
-    engine.add_object(
-        &flag,
-        blade_engine::Transform {
-            // Keep the start marker off the racing line; a center-line pole
-            // yaws a full-throttle launch into the weeds.
-            position: (start.position
-                + start.normal * 0.2
-                + start_side * (planet.track_width * 0.48))
-                .into(),
-            orientation: planet::surface_quat(start.normal, start.tangent).into(),
-        },
-        blade_engine::DynamicInput::Empty,
+    handles.push(
+        engine.add_object(
+            &flag,
+            blade_engine::Transform {
+                // Keep the start marker off the racing line; a center-line pole
+                // yaws a full-throttle launch into the weeds.
+                position: (start.position
+                    + start.normal * 0.2
+                    + start_side * (planet.track_width * 0.48))
+                    .into(),
+                orientation: planet::surface_quat(start.normal, start.tangent).into(),
+            },
+            blade_engine::DynamicInput::Empty,
+        ),
     );
 
     let pylon = blade_engine::config::Object {
@@ -937,16 +1017,17 @@ fn spawn_props(engine: &mut blade_engine::Engine, planet: &planet::GeneratedPlan
         let offset = planet.track_width * 0.52;
         for sign in [-1.0, 1.0] {
             let pos = sample.position + side * (offset * sign) + sample.normal * 0.1;
-            engine.add_object(
+            handles.push(engine.add_object(
                 &pylon,
                 blade_engine::Transform {
                     position: pos.into(),
                     orientation: planet::surface_quat(sample.normal, sample.tangent).into(),
                 },
                 blade_engine::DynamicInput::Empty,
-            );
+            ));
         }
     }
+    handles
 }
 
 fn project_tangent(v: glam::Vec3, up: glam::Vec3) -> glam::Vec3 {

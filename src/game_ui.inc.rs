@@ -24,23 +24,36 @@ impl Game {
                 let pressed = state == winit::event::ElementState::Pressed;
                 match key_code {
                     #[cfg(not(target_arch = "wasm32"))]
-                    winit::keyboard::KeyCode::Escape => return Err(QuitEvent),
-                    winit::keyboard::KeyCode::ArrowUp | winit::keyboard::KeyCode::KeyW => {
+                    winit::keyboard::KeyCode::Escape if pressed => {
+                        if self.in_menu {
+                            return Err(QuitEvent);
+                        }
+                        self.open_menu();
+                    }
+                    winit::keyboard::KeyCode::ArrowUp | winit::keyboard::KeyCode::KeyW
+                        if !self.in_menu =>
+                    {
                         self.throttle_forward = pressed;
                     }
-                    winit::keyboard::KeyCode::ArrowDown | winit::keyboard::KeyCode::KeyS => {
+                    winit::keyboard::KeyCode::ArrowDown | winit::keyboard::KeyCode::KeyS
+                        if !self.in_menu =>
+                    {
                         self.throttle_reverse = pressed;
                     }
-                    winit::keyboard::KeyCode::ArrowLeft | winit::keyboard::KeyCode::KeyA => {
+                    winit::keyboard::KeyCode::ArrowLeft | winit::keyboard::KeyCode::KeyA
+                        if !self.in_menu =>
+                    {
                         self.steer_left = pressed;
                     }
-                    winit::keyboard::KeyCode::ArrowRight | winit::keyboard::KeyCode::KeyD => {
+                    winit::keyboard::KeyCode::ArrowRight | winit::keyboard::KeyCode::KeyD
+                        if !self.in_menu =>
+                    {
                         self.steer_right = pressed;
                     }
-                    winit::keyboard::KeyCode::KeyR if pressed => {
+                    winit::keyboard::KeyCode::KeyR if pressed && !self.in_menu => {
                         self.respawn();
                     }
-                    winit::keyboard::KeyCode::Space if pressed => {
+                    winit::keyboard::KeyCode::Space if pressed && !self.in_menu => {
                         let pose = self.vehicle.pose(&self.engine);
                         let up = pose.position.normalize_or_zero();
                         self.engine.apply_linear_impulse(
@@ -48,7 +61,7 @@ impl Game {
                             (self.vehicle.jump_impulse * up).into(),
                         );
                     }
-                    winit::keyboard::KeyCode::Comma if pressed => {
+                    winit::keyboard::KeyCode::Comma if pressed && !self.in_menu => {
                         let pose = self.vehicle.pose(&self.engine);
                         let forward = pose.orientation * glam::Vec3::Z;
                         self.engine.apply_angular_impulse(
@@ -56,7 +69,7 @@ impl Game {
                             (self.vehicle.roll_impulse * forward).into(),
                         );
                     }
-                    winit::keyboard::KeyCode::Period if pressed => {
+                    winit::keyboard::KeyCode::Period if pressed && !self.in_menu => {
                         let pose = self.vehicle.pose(&self.engine);
                         let forward = pose.orientation * glam::Vec3::Z;
                         self.engine.apply_angular_impulse(
@@ -139,15 +152,20 @@ impl Game {
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let egui_context = self.egui_state.egui_ctx().clone();
         let egui_output = egui_context.run_ui(raw_input, |egui_ctx| {
-            let mut frame = egui::Frame::side_top_panel(&egui_ctx.global_style());
-            let mut fill = frame.fill.to_array();
-            for channel in fill.iter_mut() {
-                *channel = (*channel as u32 * 7 / 8) as u8;
+            if self.in_menu {
+                self.populate_menu(egui_ctx);
+            } else {
+                let mut frame = egui::Frame::side_top_panel(&egui_ctx.global_style());
+                let mut fill = frame.fill.to_array();
+                for channel in fill.iter_mut() {
+                    *channel = (*channel as u32 * 7 / 8) as u8;
+                }
+                frame.fill =
+                    egui::Color32::from_rgba_premultiplied(fill[0], fill[1], fill[2], fill[3]);
+                egui::Panel::right("hud")
+                    .frame(frame)
+                    .show_inside(egui_ctx, |ui| self.populate_hud(ui));
             }
-            frame.fill = egui::Color32::from_rgba_premultiplied(fill[0], fill[1], fill[2], fill[3]);
-            egui::Panel::right("hud")
-                .frame(frame)
-                .show_inside(egui_ctx, |ui| self.populate_hud(ui));
         });
 
         self.egui_state
@@ -180,9 +198,55 @@ impl Game {
         egui_output.viewport_output[&self.egui_viewport_id].repaint_delay
     }
 
+    fn populate_menu(&mut self, ui: &mut egui::Ui) {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(48.0);
+                ui.heading("Redline");
+                ui.label("Pick a vehicle and circuit, then Start Race.");
+                ui.add_space(16.0);
+
+                ui.group(|ui| {
+                    ui.set_min_width(320.0);
+                    ui.label(egui::RichText::new("Vehicle").strong());
+                    for id in menu::VehicleId::ALL {
+                        ui.selectable_value(&mut self.menu_vehicle, id, id.label());
+                    }
+                });
+
+                ui.add_space(12.0);
+
+                ui.group(|ui| {
+                    ui.set_min_width(320.0);
+                    ui.label(egui::RichText::new("Circuit").strong());
+                    for id in menu::MapId::ALL {
+                        ui.selectable_value(&mut self.menu_map, id, id.label());
+                    }
+                    ui.add_space(4.0);
+                    ui.label(self.menu_map.blurb());
+                });
+
+                ui.add_space(20.0);
+                if ui
+                    .add_sized([200.0, 36.0], egui::Button::new("Start Race"))
+                    .clicked()
+                {
+                    self.start_race();
+                }
+
+                ui.add_space(24.0);
+                ui.label("Esc quit   ·   Menu from race pauses without rebuilding the world");
+            });
+        });
+    }
+
     fn populate_hud(&mut self, ui: &mut egui::Ui) {
         ui.heading("Redline");
-        ui.label("A lap around Mars. Keep the rusty side down.");
+        ui.label(format!(
+            "{} on {}",
+            self.menu_vehicle.label(),
+            self.active_map.label()
+        ));
         ui.separator();
         let pose = self.vehicle.pose(&self.engine);
         let (_cp, progress) = planet::track_progress(pose.position, &self.planet.track);
@@ -213,6 +277,7 @@ impl Game {
         ui.separator();
         ui.label("W/↑ throttle   S/↓ brake   A/D steer");
         ui.label("R respawn   Space jump   ,/. roll");
+        ui.label("Esc menu");
 
         egui::CollapsingHeader::new("Camera")
             .default_open(false)
@@ -233,6 +298,9 @@ impl Game {
             });
 
         ui.horizontal(|ui| {
+            if ui.button("Menu").clicked() {
+                self.open_menu();
+            }
             if ui.button("Recover").clicked() {
                 self.recover();
             }
