@@ -243,7 +243,8 @@ impl Game {
         let cli = parse_cli();
         let spawn = vehicle::Vehicle::spawn_pose(&planet.track, vehicle::SPAWN_HOVER);
         let vehicle = vehicle::spawn(&mut engine, &veh_config, spawn.clone(), None);
-        let ai_drivers = if cli.script.is_some() {
+        let clear_ai = cli.script.is_some_and(|script| script.clears_ai());
+        let ai_drivers = if clear_ai {
             Vec::new()
         } else {
             opponent_specs()
@@ -287,6 +288,11 @@ impl Game {
         );
 
         let race = race::Race::new(&planet.track, config::Race::default());
+        log::info!(
+            "drivers ready: player + {} AI (script={:?})",
+            ai_drivers.len(),
+            cli.script.map(|s| s.as_str())
+        );
 
         let egui_context = egui::Context::default();
         let egui_viewport_id = egui_context.viewport_id();
@@ -597,7 +603,8 @@ impl Game {
             .is_some_and(|limit| self.sim_time >= limit);
         let lap_done = matches!(self.script, Some(trace::Script::Lap))
             && (self.race.lap > 1 || self.race.finished || self.race.last_lap_time.is_some());
-        timed_out || lap_done
+        let race_done = matches!(self.script, Some(trace::Script::Race)) && self.race.finished;
+        timed_out || lap_done || race_done
     }
 }
 
@@ -696,8 +703,9 @@ fn opponent_specs() -> &'static [OpponentSpec] {
 
 #[cfg(target_arch = "wasm32")]
 fn parse_cli() -> Cli {
-    // `?script=lap&seconds=40` lets the WASM build exercise the same fixed-step
-    // drives as native. Recording still needs a filesystem, so it stays off.
+    // `?script=lap&seconds=40` or `?script=race&seconds=120` lets the WASM build
+    // exercise the same fixed-step drives as native (race keeps AI on).
+    // Recording still needs a filesystem, so it stays off.
     let mut cli = Cli {
         smoke_frames: None,
         record_path: None,
@@ -719,6 +727,7 @@ fn parse_cli() -> Cli {
                     "steer" => Some(trace::Script::Steer),
                     "offroad" => Some(trace::Script::Offroad),
                     "lap" => Some(trace::Script::Lap),
+                    "race" => Some(trace::Script::Race),
                     _ => None,
                 };
             }
@@ -731,8 +740,12 @@ fn parse_cli() -> Cli {
             _ => {}
         }
     }
-    if cli.seconds.is_none() && cli.script.is_some() {
-        cli.seconds = Some(30.0);
+    if cli.seconds.is_none() {
+        cli.seconds = match cli.script {
+            Some(trace::Script::Race) => Some(120.0),
+            Some(_) => Some(30.0),
+            None => None,
+        };
     }
     cli
 }
@@ -787,7 +800,10 @@ fn parse_cli() -> Cli {
         )));
     }
     if cli.seconds.is_none() && (cli.script.is_some() || cli.record_path.is_some()) {
-        cli.seconds = Some(10.0);
+        cli.seconds = Some(match cli.script {
+            Some(trace::Script::Race) => 120.0,
+            _ => 10.0,
+        });
     }
     cli
 }
