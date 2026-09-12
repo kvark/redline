@@ -11,6 +11,8 @@ pub enum Script {
     Steer,
     Offroad,
     Lap,
+    /// Same player path as Lap, but AI opponents stay spawned for a full race.
+    Race,
 }
 
 impl Script {
@@ -21,6 +23,7 @@ impl Script {
             "steer" => Self::Steer,
             "offroad" => Self::Offroad,
             "lap" => Self::Lap,
+            "race" => Self::Race,
             _ => return None,
         })
     }
@@ -31,7 +34,13 @@ impl Script {
             Self::Steer => "steer",
             Self::Offroad => "offroad",
             Self::Lap => "lap",
+            Self::Race => "race",
         }
+    }
+
+    /// Headless / WASM drives that need an empty track (no AI collisions).
+    pub fn clears_ai(self) -> bool {
+        !matches!(self, Self::Race)
     }
 
     /// Analog throttle/steer in [-1, 1] for a canned trajectory.
@@ -49,7 +58,7 @@ impl Script {
                     (1.0, (heading_error * gain).clamp(-1.0, 1.0))
                 }
             }
-            Self::Lap => {
+            Self::Lap | Self::Race => {
                 // Slow for heading/off-course error so the script can finish a
                 // circuit instead of skateboarding off the outside of a bend.
                 let turn = heading_error.abs();
