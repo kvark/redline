@@ -25,6 +25,27 @@ impl Game {
             }
         }
 
+        // Enter rematch from the results board (keep craft + circuit).
+        if let winit::event::WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(key),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = *event
+            && matches!(
+                key,
+                winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter
+            )
+            && self.race_results.is_some()
+        {
+            self.start_race();
+            self.window.request_redraw();
+            return Ok(winit::event_loop::ControlFlow::Poll);
+        }
+
         let response = self.egui_state.on_window_event(&self.window, event);
         if response.repaint {
             self.window.request_redraw();
@@ -46,7 +67,9 @@ impl Game {
                 let pressed = state == winit::event::ElementState::Pressed;
                 // Throttle/steer may be held through the lights; impulses wait for GO.
                 let on_grid = !self.in_menu;
-                let drive_ok = on_grid && !self.countdown_locks_drive();
+                let drive_ok = on_grid
+                    && !self.countdown_locks_drive()
+                    && self.race_results.is_none();
                 match key_code {
                     winit::keyboard::KeyCode::ArrowUp | winit::keyboard::KeyCode::KeyW
                         if on_grid =>
@@ -334,6 +357,7 @@ impl Game {
         let race_time = board.race_time;
         let best_lap = board.best_lap;
         let last_lap = board.last_lap;
+        let mut rematch_clicked = false;
         let mut continue_clicked = false;
         egui::Area::new(egui::Id::new("race_results"))
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -24.0))
@@ -370,21 +394,32 @@ impl Game {
                                 ui.label(format!("Last lap  {}", format_time(last)));
                             }
                             ui.add_space(14.0);
-                            if ui
-                                .add_sized([160.0, 32.0], egui::Button::new("Continue"))
-                                .clicked()
-                            {
-                                continue_clicked = true;
-                            }
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_sized([120.0, 32.0], egui::Button::new("Rematch"))
+                                    .clicked()
+                                {
+                                    rematch_clicked = true;
+                                }
+                                if ui
+                                    .add_sized([120.0, 32.0], egui::Button::new("Continue"))
+                                    .clicked()
+                                {
+                                    continue_clicked = true;
+                                }
+                            });
                             ui.label(
-                                egui::RichText::new("Esc · auto-return")
+                                egui::RichText::new("Enter rematch · Esc menu · auto-return")
                                     .size(14.0)
                                     .color(egui::Color32::from_rgba_unmultiplied(200, 200, 200, 160)),
                             );
                         });
                     });
             });
-        if continue_clicked {
+        if rematch_clicked {
+            // Same craft + circuit; start_race clears results and restarts lights.
+            self.start_race();
+        } else if continue_clicked {
             self.race_results = None;
             self.open_menu();
         }
