@@ -49,6 +49,7 @@ pub struct Game {
     recorder: Option<trace::Recorder>,
     record_seconds: Option<f32>,
     sim_time: f32,
+    physics_accum: f32,
     recovered_this_step: u8,
 }
 
@@ -322,6 +323,7 @@ impl Game {
                 .map(|path| trace::Recorder::new(path, cli.script.unwrap_or(trace::Script::Lap))),
             record_seconds: cli.seconds,
             sim_time: 0.0,
+            physics_accum: 0.0,
             recovered_this_step: 0,
         }
     }
@@ -329,16 +331,43 @@ impl Game {
     fn update_time(&mut self) {
         let wall = self.last_physics_update.elapsed().as_secs_f32();
         self.last_physics_update = time::Instant::now();
-        // Scripted traces use a fixed step so joint/control analysis is not
-        // dominated by whatever frame time lavapipe happened to deliver.
-        let dt = if self.script.is_some() {
-            0.01
-        } else {
-            wall.min(0.05)
-        };
         if self.is_paused {
             return;
         }
+        // Fixed step keeps Rapier/controls identical on lavapipe, a real GPU,
+        // and WebGL2 — frame time only changes how many steps we catch up.
+        const PHYSICS_DT: f32 = 0.01;
+        self.physics_accum = (self.physics_accum + wall).min(0.35);
+        // Scripts may run dozens of steps per redraw so a 30s lap finishes in
+        // seconds of wall time under software raster. Playable caps catch-up
+        // to avoid a death spiral when a frame is slow.
+        let max_steps = if self.script.is_some() { 80 } else { 5 };
+        let mut steps = 0u32;
+        let physics_started = time::Instant::now();
+        while self.physics_accum >= PHYSICS_DT && steps < max_steps {
+            if self.script_finished() {
+                break;
+            }
+            self.physics_accum -= PHYSICS_DT;
+            self.step_physics(PHYSICS_DT);
+            steps += 1;
+        }
+        if self.script.is_none() && steps >= max_steps {
+            self.physics_accum = 0.0;
+        }
+        let physics_ms = physics_started.elapsed().as_secs_f32() * 1e3;
+        if cfg!(debug_assertions) && self.frame_index.is_multiple_of(20) {
+            log::debug!(
+                "physics {:.1}ms ({} x {:.0}ms steps, accum leftover {:.1}ms)",
+                physics_ms,
+                steps,
+                PHYSICS_DT * 1e3,
+                self.physics_accum * 1e3
+            );
+        }
+    }
+
+    fn step_physics(&mut self, dt: f32) {
         self.sim_time += dt;
         self.update_vehicle_controls(dt);
         self.vehicle
@@ -352,17 +381,7 @@ impl Game {
                 dt,
             );
         }
-        let physics_started = time::Instant::now();
         self.engine.update(dt);
-        let physics_ms = physics_started.elapsed().as_secs_f32() * 1e3;
-        if cfg!(debug_assertions) && self.frame_index.is_multiple_of(20) {
-            log::debug!(
-                "engine.update {:.1}ms (sim dt={:.1}ms, ~{} physics steps)",
-                physics_ms,
-                dt * 1e3,
-                (dt / 0.01).ceil() as u32
-            );
-        }
         self.apply_vehicle_bumps();
         self.recovered_this_step = u8::from(self.vehicle.recover_if_needed(
             &mut self.engine,
@@ -447,6 +466,7 @@ impl Game {
         };
         let up = pose.position.normalize_or_zero();
         let query = planet::query_track(pose.position, &self.planet.track);
+        let (_idx, progress) = planet::track_progress(pose.position, &self.planet.track);
         recorder.push(trace::Sample {
             t: self.sim_time,
             throttle: self.controller.throttle(),
@@ -464,6 +484,9 @@ impl Game {
                 linear.length(),
                 true,
             ),
+            track_progress: progress,
+            checkpoint: self.race.next_checkpoint as u32,
+            lap: self.race.lap,
             recovered: self.recovered_this_step,
         });
     }
@@ -569,8 +592,12 @@ impl Game {
     }
 
     pub(crate) fn script_finished(&self) -> bool {
-        self.record_seconds
-            .is_some_and(|limit| self.sim_time >= limit)
+        let timed_out = self
+            .record_seconds
+            .is_some_and(|limit| self.sim_time >= limit);
+        let lap_done = matches!(self.script, Some(trace::Script::Lap))
+            && (self.race.lap > 1 || self.race.finished || self.race.last_lap_time.is_some());
+        timed_out || lap_done
     }
 }
 
@@ -669,12 +696,45 @@ fn opponent_specs() -> &'static [OpponentSpec] {
 
 #[cfg(target_arch = "wasm32")]
 fn parse_cli() -> Cli {
-    Cli {
+    // `?script=lap&seconds=40` lets the WASM build exercise the same fixed-step
+    // drives as native. Recording still needs a filesystem, so it stays off.
+    let mut cli = Cli {
         smoke_frames: None,
         record_path: None,
         script: None,
         seconds: None,
+    };
+    let search = web_sys::window()
+        .and_then(|window| window.location().search().ok())
+        .unwrap_or_default();
+    let query = search.trim_start_matches('?');
+    for pair in query.split('&').filter(|part| !part.is_empty()) {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next().unwrap_or("");
+        let value = parts.next().unwrap_or("");
+        match key {
+            "script" => {
+                cli.script = match value {
+                    "accel" => Some(trace::Script::Accel),
+                    "steer" => Some(trace::Script::Steer),
+                    "offroad" => Some(trace::Script::Offroad),
+                    "lap" => Some(trace::Script::Lap),
+                    _ => None,
+                };
+            }
+            "seconds" => {
+                cli.seconds = value.parse().ok();
+            }
+            "smoke" => {
+                cli.smoke_frames = value.parse().ok();
+            }
+            _ => {}
+        }
     }
+    if cli.seconds.is_none() && cli.script.is_some() {
+        cli.seconds = Some(30.0);
+    }
+    cli
 }
 
 #[cfg(not(target_arch = "wasm32"))]

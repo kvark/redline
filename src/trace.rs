@@ -14,6 +14,7 @@ pub enum Script {
 }
 
 impl Script {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn parse(name: &str) -> Option<Self> {
         Some(match name {
             "accel" => Self::Accel,
@@ -48,7 +49,24 @@ impl Script {
                     (1.0, (heading_error * gain).clamp(-1.0, 1.0))
                 }
             }
-            Self::Lap => (1.0, (heading_error * 1.7).clamp(-1.0, 1.0)),
+            Self::Lap => {
+                // Slow for heading/off-course error so the script can finish a
+                // circuit instead of skateboarding off the outside of a bend.
+                let turn = heading_error.abs();
+                let throttle = if off_track > 2.5 {
+                    0.35
+                } else if off_track > 0.6 {
+                    0.62
+                } else if turn > 0.75 {
+                    0.52
+                } else if turn > 0.4 {
+                    0.74
+                } else {
+                    1.0
+                };
+                let gain = if off_track > 0.5 { 2.25 } else { 1.9 };
+                (throttle, (heading_error * gain).clamp(-1.0, 1.0))
+            }
         }
     }
 }
@@ -66,6 +84,9 @@ pub struct Sample {
     pub upright: f32,
     pub off_track: f32,
     pub heading_error: f32,
+    pub track_progress: f32,
+    pub checkpoint: u32,
+    pub lap: u32,
     pub recovered: u8,
 }
 
@@ -90,11 +111,11 @@ impl Recorder {
 
     pub fn finish(&self) {
         let mut body = String::from(
-            "t,throttle,steer,px,py,pz,speed,fwd,lat,yaw,upright,off,head,recovered\n",
+            "t,throttle,steer,px,py,pz,speed,fwd,lat,yaw,upright,off,head,progress,cp,lap,recovered\n",
         );
         for row in self.rows.iter() {
             body.push_str(&format!(
-                "{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{}\n",
+                "{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{},{},{}\n",
                 row.t,
                 row.throttle,
                 row.steer,
@@ -108,6 +129,9 @@ impl Recorder {
                 row.upright,
                 row.off_track,
                 row.heading_error,
+                row.track_progress,
+                row.checkpoint,
+                row.lap,
                 row.recovered,
             ));
         }
@@ -146,11 +170,15 @@ fn log_summary(script: Script, rows: &[Sample]) {
         .windows(2)
         .filter(|pair| pair[0].yaw_rate * pair[1].yaw_rate < -0.15)
         .count();
+    let first_off = rows.iter().find(|r| r.off_track > 0.0).map(|r| r.t);
+    let max_progress = rows.iter().map(|r| r.track_progress).fold(0.0f32, f32::max);
+    let max_lap = rows.iter().map(|r| r.lap).max().unwrap_or(1);
+    let max_cp = rows.iter().map(|r| r.checkpoint).max().unwrap_or(0);
     let start = rows.first().unwrap().position;
     let end = rows.last().unwrap().position;
     let travelled = start.distance(end);
     log::info!(
-        "trace {} n={} t={:.1}s travelled={:.1} max_speed={:.1} mean_speed={:.1} mean_|lat|={:.2} max_off={:.1} min_upright={:.2} recoveries={} stuck_samples={} yaw_flips={}",
+        "trace {} n={} t={:.1}s travelled={:.1} max_speed={:.1} mean_speed={:.1} mean_|lat|={:.2} max_off={:.1} first_off={} min_upright={:.2} recoveries={} stuck_samples={} yaw_flips={} progress={:.2} cp={} lap={}",
         script.as_str(),
         rows.len(),
         rows.last().unwrap().t,
@@ -159,10 +187,16 @@ fn log_summary(script: Script, rows: &[Sample]) {
         mean_speed,
         mean_lat,
         max_off,
+        first_off
+            .map(|t| format!("{t:.1}"))
+            .unwrap_or_else(|| "-".into()),
         min_upright,
         recoveries,
         stuck,
         yaw_sign_flips,
+        max_progress,
+        max_cp,
+        max_lap,
     );
 }
 
@@ -176,12 +210,17 @@ pub fn look_ahead_heading(
     let up = pose.position.normalize_or_zero();
     let forward = (pose.orientation * glam::Vec3::Z).reject_from(up);
     let forward = forward.normalize_or_zero();
-    let look = (8 + (speed * 0.28) as usize).min(20);
+    let look = (8 + (speed * 0.30) as usize).min(22);
     let target = track[(query.index + look) % track.len()];
     let mut desired = (target.position - pose.position).reject_from(up);
-    if pull_to_road && query.lateral.abs() > 1.0 {
-        desired -= query.side * query.lateral;
-    }
+    // Always bias toward the ribbon center; ramp harder near the verge so the
+    // lap script (and a recovering player) rejoin instead of skating wide.
+    let center_gain = if pull_to_road {
+        0.45 + query.lateral.abs() * 0.08
+    } else {
+        0.2
+    };
+    desired -= query.side * query.lateral * center_gain;
     let desired = desired.normalize_or_zero();
     control::signed_heading_error(forward, desired, up)
 }

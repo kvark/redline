@@ -90,7 +90,14 @@ impl Game {
                     }
                 }
                 if self.script_finished() {
-                    log::info!("Drive script finished");
+                    log::info!(
+                        "Drive script finished sim={:.1}s lap={} cp={} race_time={:.1} last_lap={:?}",
+                        self.sim_time,
+                        self.race.lap,
+                        self.race.next_checkpoint,
+                        self.race.time,
+                        self.race.last_lap_time
+                    );
                     return Err(QuitEvent);
                 }
                 return Ok(if let Some(when) = time::Instant::now().checked_add(wait) {
