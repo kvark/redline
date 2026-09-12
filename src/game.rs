@@ -42,6 +42,7 @@ pub struct Game {
     steer_left: bool,
     steer_right: bool,
     dust: usize,
+    decoration_lights: Vec<blade_engine::LightHandle>,
     smoke_frames_left: Option<u32>,
     /// Frame counter for the camera / vehicle state-trace journal.
     frame_index: u32,
@@ -150,6 +151,7 @@ impl Game {
                     depth: 220.0,
                     strength: 0.72,
                     normal_bias: 0.07,
+                    depth_bias: 0.08,
                 })
             },
             ..Default::default()
@@ -321,6 +323,7 @@ impl Game {
             steer_left: false,
             steer_right: false,
             dust,
+            decoration_lights: Vec::new(),
             smoke_frames_left: cli.smoke_frames,
             frame_index: 0,
             script: cli.script,
@@ -498,6 +501,16 @@ impl Game {
     }
 
     fn update_local_lights(&mut self, eye: glam::Vec3) {
+        if self.decoration_lights.is_empty() {
+            let off = blade_render::LocalLight {
+                intensity: 0.0,
+                range: 1.0,
+                ..Default::default()
+            };
+            for _ in 0..blade_render::MAX_LOCAL_LIGHTS {
+                self.decoration_lights.push(self.engine.add_light(off));
+            }
+        }
         let mut ranked = self
             .planet
             .decorations
@@ -509,25 +522,36 @@ impl Game {
                 let intensity = color[0].max(color[1]).max(color[2]);
                 Some((
                     intensity / dist2,
-                    blade_render::PointLight {
+                    blade_render::LocalLight {
                         position: deco.position.into(),
                         color: mint::Vector3 {
                             x: color[0],
                             y: color[1],
                             z: color[2],
                         },
-                        radius: 11.0 + deco.scale * 0.65,
+                        intensity: intensity.max(0.05),
+                        range: 11.0 + deco.scale * 0.65,
+                        angular: blade_render::LightAngularProfile::Omnidirectional,
                     },
                 ))
             })
             .collect::<Vec<_>>();
         ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        let lights: Vec<_> = ranked
+        let mut lights: Vec<_> = ranked
             .into_iter()
-            .take(blade_render::MAX_POINT_LIGHTS)
+            .take(blade_render::MAX_LOCAL_LIGHTS)
             .map(|(_, light)| light)
             .collect();
-        self.engine.set_point_lights(&lights);
+        while lights.len() < self.decoration_lights.len() {
+            lights.push(blade_render::LocalLight {
+                intensity: 0.0,
+                range: 1.0,
+                ..Default::default()
+            });
+        }
+        for (handle, light) in self.decoration_lights.iter().copied().zip(lights) {
+            self.engine.set_light(handle, light);
+        }
     }
 
     fn apply_vehicle_bumps(&mut self) {
