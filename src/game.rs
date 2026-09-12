@@ -19,6 +19,7 @@ use crate::lap_callout;
 use crate::menu;
 use crate::planet;
 use crate::race;
+use crate::results;
 use crate::trace;
 use crate::vehicle;
 use crate::vehicle::Isometry;
@@ -65,6 +66,8 @@ pub struct Game {
     start_countdown: Option<countdown::StartCountdown>,
     /// Brief lap / FINAL LAP / FINISH banner (visual only; never blocks drive).
     lap_callout: Option<lap_callout::LapCallout>,
+    /// Post-FINISH placement board; skipped for scripts/smoke.
+    race_results: Option<results::RaceResults>,
 }
 
 pub struct QuitEvent;
@@ -262,6 +265,7 @@ impl Game {
             recovered_this_step: 0,
             start_countdown: None,
             lap_callout: None,
+            race_results: None,
         }
     }
 
@@ -286,6 +290,7 @@ impl Game {
         self.is_paused = true;
         self.start_countdown = None;
         self.lap_callout = None;
+        self.race_results = None;
         self.throttle_forward = false;
         self.throttle_reverse = false;
         self.steer_left = false;
@@ -322,6 +327,7 @@ impl Game {
         self.steer_right = false;
         self.controller = control::PlayerController::default();
         self.lap_callout = None;
+        self.race_results = None;
         // Scripts / smoke skip the lights so automation stays fast.
         self.start_countdown = if self.script.is_none() && self.smoke_frames_left.is_none() {
             Some(countdown::StartCountdown::new())
@@ -427,15 +433,37 @@ impl Game {
         ));
         let (pose, linear, angular, forward_speed, lateral_speed) =
             self.vehicle.motion(&self.engine);
-        if !drive_locked && let Some(event) = self.race.update(pose.position, dt) {
-            self.on_race_event(event);
+        if !drive_locked {
+            if let Some(event) = self.race.update(pose.position, dt) {
+                self.on_race_event(event);
+            }
+            for driver in self.ai_drivers.iter_mut() {
+                let ai_pose = driver.vehicle.pose(&self.engine);
+                let _ = driver.race.update(ai_pose.position, dt);
+            }
         }
         if self
             .lap_callout
             .as_mut()
             .is_some_and(|banner| banner.tick(dt))
         {
+            let was_finish = matches!(
+                self.lap_callout.as_ref().map(|b| b.kind()),
+                Some(lap_callout::CalloutKind::Finish)
+            );
             self.lap_callout = None;
+            // Scripts/smoke must not block on the results board.
+            if was_finish && self.script.is_none() && self.smoke_frames_left.is_none() {
+                self.race_results = Some(self.capture_results());
+            }
+        }
+        if self
+            .race_results
+            .as_mut()
+            .is_some_and(|board| board.tick(dt))
+        {
+            self.race_results = None;
+            self.open_menu();
         }
         self.emit_dust(&pose, dt);
         self.record_sample(&pose, linear, angular, forward_speed, lateral_speed);
@@ -670,6 +698,32 @@ impl Game {
         } else {
             &mut self.ai_drivers[id - 1].vehicle
         }
+    }
+
+    fn field_size(&self) -> usize {
+        1 + self.ai_drivers.len()
+    }
+
+    fn live_place(&self) -> usize {
+        let player_pose = self.vehicle.pose(&self.engine);
+        let (_, player_frac) = planet::track_progress(player_pose.position, &self.planet.track);
+        let player_score = self.race.progress_score(player_frac);
+        let opponent_scores = self.ai_drivers.iter().map(|driver| {
+            let pose = driver.vehicle.pose(&self.engine);
+            let (_, frac) = planet::track_progress(pose.position, &self.planet.track);
+            driver.race.progress_score(frac)
+        });
+        race::player_place(player_score, opponent_scores)
+    }
+
+    fn capture_results(&self) -> results::RaceResults {
+        results::RaceResults::new(
+            self.live_place(),
+            self.field_size(),
+            self.race.time,
+            self.race.best_lap,
+            self.race.last_lap_time,
+        )
     }
 
     pub(crate) fn script_finished(&self) -> bool {
