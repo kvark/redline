@@ -146,6 +146,7 @@ impl Game {
     fn respawn(&mut self) {
         self.vehicle.teleport(&mut self.engine, &self.spawn);
         self.race.reset();
+        self.lap_callout = None;
     }
 
     fn recover(&mut self) {
@@ -184,6 +185,7 @@ impl Game {
                     .frame(frame)
                     .show_inside(egui_ctx, |ui| self.populate_hud(ui));
                 self.populate_countdown(egui_ctx);
+                self.populate_lap_callout(egui_ctx);
             }
         });
 
@@ -258,6 +260,63 @@ impl Game {
             });
     }
 
+
+    fn populate_lap_callout(&self, ui: &egui::Ui) {
+        let Some(banner) = self.lap_callout.as_ref() else {
+            return;
+        };
+        // Don't fight the start lights for screen center.
+        if self.start_countdown.is_some() {
+            return;
+        }
+        let (title, subtitle, color) = match banner.kind() {
+            lap_callout::CalloutKind::LapComplete { lap_time } => (
+                "LAP",
+                Some(format_time(lap_time)),
+                egui::Color32::from_rgb(120, 220, 255),
+            ),
+            lap_callout::CalloutKind::FinalLap { previous_lap } => (
+                "FINAL LAP",
+                Some(format_time(previous_lap)),
+                egui::Color32::from_rgb(255, 90, 90),
+            ),
+            lap_callout::CalloutKind::Finish => (
+                "FINISH",
+                self.race.last_lap_time.map(format_time),
+                egui::Color32::from_rgb(120, 255, 140),
+            ),
+        };
+        egui::Area::new(egui::Id::new("lap_callout"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -72.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(title)
+                            .size(
+                                if matches!(
+                                    banner.kind(),
+                                    lap_callout::CalloutKind::FinalLap { .. }
+                                ) {
+                                    72.0
+                                } else {
+                                    64.0
+                                },
+                            )
+                            .strong()
+                            .color(color),
+                    );
+                    if let Some(sub) = subtitle {
+                        ui.label(
+                            egui::RichText::new(sub)
+                                .size(28.0)
+                                .color(egui::Color32::from_rgba_unmultiplied(240, 240, 240, 220)),
+                        );
+                    }
+                });
+            });
+    }
+
     fn populate_menu(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical_centered(|ui| {
@@ -312,17 +371,33 @@ impl Game {
         ui.separator();
         let pose = self.vehicle.pose(&self.engine);
         let (_cp, progress) = planet::track_progress(pose.position, &self.planet.track);
-        ui.label(format!("Lap {} / {}", self.race.lap, self.race.laps_to_win));
+        ui.label(
+            egui::RichText::new(format!(
+                "LAP {} / {}",
+                self.race.lap, self.race.laps_to_win
+            ))
+            .size(22.0)
+            .strong(),
+        );
+        if self.race.lap >= self.race.laps_to_win && !self.race.finished {
+            ui.colored_label(egui::Color32::from_rgb(255, 90, 90), "FINAL LAP");
+        }
         ui.label(format!(
-            "Sector {:.0}%   r={:.0}m",
+            "Sector {} / {}   {:.0}%   r={:.0}m",
+            self.race.sector(),
+            self.race.sector_count(),
             progress * 100.0,
             self.planet.radius
         ));
-        ui.label(format!("Time  {}", format_time(self.race.time)));
-        ui.label(format!("Opponents  {}", self.ai_drivers.len()));
+        ui.label(format!("Lap   {}", format_time(self.race.current_lap_time())));
         if let Some(best) = self.race.best_lap {
             ui.label(format!("Best  {}", format_time(best)));
         }
+        if let Some(last) = self.race.last_lap_time {
+            ui.label(format!("Last  {}", format_time(last)));
+        }
+        ui.label(format!("Race  {}", format_time(self.race.time)));
+        ui.label(format!("Opponents  {}", self.ai_drivers.len()));
         if self.race.finished {
             ui.colored_label(egui::Color32::LIGHT_GREEN, "Circuit complete");
         }

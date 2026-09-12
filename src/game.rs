@@ -15,6 +15,7 @@ use crate::ai;
 use crate::config;
 use crate::control;
 use crate::countdown;
+use crate::lap_callout;
 use crate::menu;
 use crate::planet;
 use crate::race;
@@ -62,6 +63,8 @@ pub struct Game {
     recovered_this_step: u8,
     /// Championship 3-2-1-GO; None means racing (or scripts/smoke).
     start_countdown: Option<countdown::StartCountdown>,
+    /// Brief lap / FINAL LAP / FINISH banner (visual only; never blocks drive).
+    lap_callout: Option<lap_callout::LapCallout>,
 }
 
 pub struct QuitEvent;
@@ -258,6 +261,7 @@ impl Game {
             physics_accum: 0.0,
             recovered_this_step: 0,
             start_countdown: None,
+            lap_callout: None,
         }
     }
 
@@ -281,6 +285,7 @@ impl Game {
         self.in_menu = true;
         self.is_paused = true;
         self.start_countdown = None;
+        self.lap_callout = None;
         self.throttle_forward = false;
         self.throttle_reverse = false;
         self.steer_left = false;
@@ -316,6 +321,7 @@ impl Game {
         self.steer_left = false;
         self.steer_right = false;
         self.controller = control::PlayerController::default();
+        self.lap_callout = None;
         // Scripts / smoke skip the lights so automation stays fast.
         self.start_countdown = if self.script.is_none() && self.smoke_frames_left.is_none() {
             Some(countdown::StartCountdown::new())
@@ -421,11 +427,35 @@ impl Game {
         ));
         let (pose, linear, angular, forward_speed, lateral_speed) =
             self.vehicle.motion(&self.engine);
-        if !drive_locked {
-            self.race.update(pose.position, dt);
+        if !drive_locked && let Some(event) = self.race.update(pose.position, dt) {
+            self.on_race_event(event);
+        }
+        if self
+            .lap_callout
+            .as_mut()
+            .is_some_and(|banner| banner.tick(dt))
+        {
+            self.lap_callout = None;
         }
         self.emit_dust(&pose, dt);
         self.record_sample(&pose, linear, angular, forward_speed, lateral_speed);
+    }
+
+    fn on_race_event(&mut self, event: race::RaceEvent) {
+        // Visual only — never gates controls or scripts.
+        self.lap_callout = Some(match event {
+            race::RaceEvent::Finished { .. } => lap_callout::LapCallout::finish(),
+            race::RaceEvent::LapComplete {
+                lap_time,
+                entering_final,
+            } => {
+                if entering_final {
+                    lap_callout::LapCallout::final_lap(lap_time)
+                } else {
+                    lap_callout::LapCallout::lap_complete(lap_time)
+                }
+            }
+        });
     }
 
     fn emit_dust(&mut self, pose: &Isometry, dt: f32) {
