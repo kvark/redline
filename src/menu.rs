@@ -1,4 +1,4 @@
-//! Pre-race vehicle and circuit selection.
+//! Pre-race craft and circuit selection (championship / planet-ribbon fantasy).
 
 use crate::{config, vehicle};
 
@@ -21,10 +21,19 @@ impl VehicleId {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::RaceFuture => "Race Future",
-            Self::Hatchback => "Hatchback Sports",
-            Self::SedanSports => "Sedan Sports",
-            Self::Taxi => "Taxi",
+            Self::RaceFuture => "Vector Spear",
+            Self::Hatchback => "Ember Hatch",
+            Self::SedanSports => "Ion Coupe",
+            Self::Taxi => "Stripe Cab",
+        }
+    }
+
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Self::RaceFuture => "Flagship anti-grav craft — clean lines, brutal top end.",
+            Self::Hatchback => "Hot hatch energy on a ribbon — snappy and loud.",
+            Self::SedanSports => "Low coupe with cool-blue livery and long gears.",
+            Self::Taxi => "Championship wildcard — yellow streak, no dignity.",
         }
     }
 
@@ -78,19 +87,21 @@ impl MapId {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::MarsClassic => "Mars Classic",
-            Self::PhobosTight => "Phobos Tight",
-            Self::HellasWide => "Hellas Wide",
-            Self::OlympusClimb => "Olympus Climb",
+            Self::MarsClassic => "Mars Equator",
+            Self::PhobosTight => "Phobos Needle",
+            Self::HellasWide => "Hellas Sweep",
+            Self::OlympusClimb => "Olympus Ascent",
         }
     }
 
     pub fn blurb(self) -> &'static str {
         match self {
-            Self::MarsClassic => "The original equatorial ribbon around Mars.",
-            Self::PhobosTight => "A smaller moonlet with a narrow racing line.",
-            Self::HellasWide => "Broad basins and a forgiving track width.",
-            Self::OlympusClimb => "Steep latitude swings and taller terrain.",
+            Self::MarsClassic => {
+                "Flagship circuit — the rusty equatorial ribbon that started it all."
+            }
+            Self::PhobosTight => "Moonlet sprint — thin ribbon, no room to breathe.",
+            Self::HellasWide => "Basin flyer — wide line for high-speed drafts.",
+            Self::OlympusClimb => "Volcano climb — hard latitude swings and steep walls.",
         }
     }
 

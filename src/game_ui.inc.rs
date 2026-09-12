@@ -202,22 +202,24 @@ impl Game {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(48.0);
-                ui.heading("Redline");
-                ui.label("Pick a vehicle and circuit, then Start Race.");
+                ui.heading("REDLINE");
+                ui.label("Futuristic planet-circuit racing. Physics-first. Mars is home.");
                 ui.add_space(16.0);
 
                 ui.group(|ui| {
-                    ui.set_min_width(320.0);
-                    ui.label(egui::RichText::new("Vehicle").strong());
+                    ui.set_min_width(360.0);
+                    ui.label(egui::RichText::new("Craft").strong());
                     for id in menu::VehicleId::ALL {
                         ui.selectable_value(&mut self.menu_vehicle, id, id.label());
                     }
+                    ui.add_space(4.0);
+                    ui.label(self.menu_vehicle.blurb());
                 });
 
                 ui.add_space(12.0);
 
                 ui.group(|ui| {
-                    ui.set_min_width(320.0);
+                    ui.set_min_width(360.0);
                     ui.label(egui::RichText::new("Circuit").strong());
                     for id in menu::MapId::ALL {
                         ui.selectable_value(&mut self.menu_map, id, id.label());
@@ -228,7 +230,7 @@ impl Game {
 
                 ui.add_space(20.0);
                 if ui
-                    .add_sized([200.0, 36.0], egui::Button::new("Start Race"))
+                    .add_sized([220.0, 36.0], egui::Button::new("Enter Circuit"))
                     .clicked()
                 {
                     self.start_race();
