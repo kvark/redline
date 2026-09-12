@@ -464,6 +464,16 @@ impl Vehicle {
         }
     }
 
+    pub fn despawn(&self, engine: &mut blade_engine::Engine) {
+        for wheel in self.wheels.iter() {
+            engine.remove_object(wheel.object);
+            if let Some(suspender) = wheel.suspender {
+                engine.remove_object(suspender);
+            }
+        }
+        engine.remove_object(self.body_handle);
+    }
+
     pub fn wheel_radius(&self) -> f32 {
         self.wheel_radius
     }
