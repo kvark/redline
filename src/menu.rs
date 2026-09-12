@@ -164,14 +164,23 @@ impl MapId {
 mod tests {
     use super::*;
 
+    /// Kit scales are `const`; keep these as runtime checks so Clippy does not
+    /// treat them as `assertions_on_constants`.
+    fn lt(a: f32, b: f32) -> bool {
+        a < b
+    }
+    fn gt(a: f32, b: f32) -> bool {
+        a > b
+    }
+
     #[test]
     fn craft_kits_differ_in_drive_feel() {
-        assert!(KIT_HATCH.body_mass_scale < 1.0);
-        assert!(KIT_HATCH.drive_factor_scale > 1.0);
-        assert!(KIT_SEDAN.drive_factor_scale < 1.0);
-        assert!(KIT_SEDAN.grip_scale > 1.0);
-        assert!(KIT_TAXI.body_mass_scale > 1.0);
-        assert!(KIT_TAXI.grip_scale < 1.0);
+        assert!(lt(KIT_HATCH.body_mass_scale, 1.0));
+        assert!(gt(KIT_HATCH.drive_factor_scale, 1.0));
+        assert!(lt(KIT_SEDAN.drive_factor_scale, 1.0));
+        assert!(gt(KIT_SEDAN.grip_scale, 1.0));
+        assert!(gt(KIT_TAXI.body_mass_scale, 1.0));
+        assert!(lt(KIT_TAXI.grip_scale, 1.0));
         assert_ne!(KIT_HATCH.jump_impulse, KIT_TAXI.jump_impulse);
         assert!(VehicleId::RaceFuture.kit().is_none());
         assert!(VehicleId::Hatchback.kit().is_some());
