@@ -19,9 +19,9 @@ git lfs pull
 cargo run --release
 ```
 
-Interactive runs open a pre-race egui menu to pick a vehicle and circuit; Start
-Race begins the lap. `--script` / `--smoke` (and WASM query scripts) skip the menu
-and boot straight into the drive, same as before.
+Interactive runs open a pre-race egui menu to pick a craft and circuit; Enter
+Circuit runs a 3-2-1-GO start, then the lap. `--script` / `--smoke` (and WASM
+query scripts) skip the menu and countdown and boot straight into the drive.
 
 The vehicle is a Rapier joint graph (chassis, four wheels, suspenders). Debug
 builds of that solver are much slower than `--release`; use release for playable
