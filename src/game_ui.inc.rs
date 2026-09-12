@@ -3,6 +3,28 @@ impl Game {
         &mut self,
         event: &winit::event::WindowEvent,
     ) -> Result<winit::event_loop::ControlFlow, QuitEvent> {
+        // Escape must win over egui focus (selectables mark the event consumed).
+        if let winit::event::WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = *event
+        {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if self.in_menu {
+                    return Err(QuitEvent);
+                }
+                self.open_menu();
+                self.window.request_redraw();
+                return Ok(winit::event_loop::ControlFlow::Poll);
+            }
+        }
+
         let response = self.egui_state.on_window_event(&self.window, event);
         if response.repaint {
             self.window.request_redraw();
@@ -23,13 +45,6 @@ impl Game {
             } => {
                 let pressed = state == winit::event::ElementState::Pressed;
                 match key_code {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    winit::keyboard::KeyCode::Escape if pressed => {
-                        if self.in_menu {
-                            return Err(QuitEvent);
-                        }
-                        self.open_menu();
-                    }
                     winit::keyboard::KeyCode::ArrowUp | winit::keyboard::KeyCode::KeyW
                         if !self.in_menu =>
                     {
