@@ -24,7 +24,8 @@ Pre-race flow should read as entering a circuit: pick **Craft**, pick **Circuit*
 **Enter Circuit**. Interactive starts hold the grid for a championship **3-2-1-GO**
 countdown (drive locked until GO); Esc cancels back to the menu. Crossing the
 line flashes lap time / **FINAL LAP** / **FINISH** callouts (visual only), then a
-brief **results** board (place P1–Pn, race / lap times) before Continue / auto-return
+brief **results** board (place P1–Pn, race / lap times). **Rematch** (or Enter)
+restarts with the same craft and circuit; Continue / Esc / auto-return go back
 to the menu. Mid-lap gates track **sector** splits: the HUD shows current sector
 time and best sector, with a brief **BEST SECTOR** flash on a personal best.
 The race HUD also shows live **place**, ticking lap time, best/last, and LAP X/Y.
