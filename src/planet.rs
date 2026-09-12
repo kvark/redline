@@ -626,14 +626,14 @@ impl MeshBuilder {
 
 fn compute_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     let mut normals = vec![glam::Vec3::ZERO; positions.len()];
-    for tri in indices.chunks_exact(3) {
-        let a = glam::Vec3::from(positions[tri[0] as usize]);
-        let b = glam::Vec3::from(positions[tri[1] as usize]);
-        let c = glam::Vec3::from(positions[tri[2] as usize]);
+    for &[i0, i1, i2] in indices.as_chunks::<3>().0 {
+        let a = glam::Vec3::from(positions[i0 as usize]);
+        let b = glam::Vec3::from(positions[i1 as usize]);
+        let c = glam::Vec3::from(positions[i2 as usize]);
         let n = (b - a).cross(c - a);
-        normals[tri[0] as usize] += n;
-        normals[tri[1] as usize] += n;
-        normals[tri[2] as usize] += n;
+        normals[i0 as usize] += n;
+        normals[i1 as usize] += n;
+        normals[i2 as usize] += n;
     }
     normals
         .into_iter()
