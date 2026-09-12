@@ -2,6 +2,8 @@ use crate::{config, planet};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RaceEvent {
+    /// Completed a mid-lap sector gate. `is_best` when this split is a new personal best.
+    SectorComplete { sector_time: f32, is_best: bool },
     /// Completed a lap that was not the race finish. `entering_final` when the
     /// new current lap is the last one.
     LapComplete { lap_time: f32, entering_final: bool },
@@ -19,7 +21,10 @@ pub struct Race {
     pub time: f32,
     pub last_lap_time: Option<f32>,
     pub best_lap: Option<f32>,
+    pub last_sector_time: Option<f32>,
+    pub best_sector: Option<f32>,
     lap_start: f32,
+    sector_start: f32,
 }
 
 impl Race {
@@ -39,7 +44,10 @@ impl Race {
             time: 0.0,
             last_lap_time: None,
             best_lap: None,
+            last_sector_time: None,
+            best_sector: None,
             lap_start: 0.0,
+            sector_start: 0.0,
         }
     }
 
@@ -51,9 +59,21 @@ impl Race {
         (self.time - self.lap_start).max(0.0)
     }
 
-    /// 1-based sector index matching the next gate the player must hit.
+    /// Elapsed time on the sector currently in progress (0 until the race starts).
+    pub fn current_sector_time(&self) -> f32 {
+        if !self.started || self.finished {
+            return self.last_sector_time.unwrap_or(0.0);
+        }
+        (self.time - self.sector_start).max(0.0)
+    }
+
+    /// 1-based sector index for the gate the player is heading toward.
     pub fn sector(&self) -> usize {
-        self.next_checkpoint + 1
+        if self.next_checkpoint == 0 {
+            self.checkpoints.len()
+        } else {
+            self.next_checkpoint
+        }
     }
 
     pub fn sector_count(&self) -> usize {
@@ -73,15 +93,36 @@ impl Race {
         if !angular_close(position, target, gate) {
             return None;
         }
+
+        // First gate arms the clock — not a timed sector.
         if !self.started {
             self.started = true;
             self.lap_start = self.time;
+            self.sector_start = self.time;
+            self.next_checkpoint = (self.next_checkpoint + 1) % self.checkpoints.len();
+            return None;
         }
+
+        let sector_time = (self.time - self.sector_start).max(0.0);
+        let is_best = match self.best_sector {
+            Some(best) => sector_time < best,
+            None => true,
+        };
+        self.last_sector_time = Some(sector_time);
+        if is_best {
+            self.best_sector = Some(sector_time);
+        }
+        self.sector_start = self.time;
+
         let wrapped = self.next_checkpoint == 0;
         self.next_checkpoint = (self.next_checkpoint + 1) % self.checkpoints.len();
         if !wrapped {
-            return None;
+            return Some(RaceEvent::SectorComplete {
+                sector_time,
+                is_best,
+            });
         }
+
         let lap_time = self.time - self.lap_start;
         self.last_lap_time = Some(lap_time);
         self.best_lap = Some(match self.best_lap {
@@ -110,7 +151,10 @@ impl Race {
         self.time = 0.0;
         self.last_lap_time = None;
         self.best_lap = None;
+        self.last_sector_time = None;
+        self.best_sector = None;
         self.lap_start = 0.0;
+        self.sector_start = 0.0;
     }
 
     /// Higher means further ahead. Finished racers beat anyone still racing;
@@ -217,6 +261,73 @@ mod tests {
     }
 
     #[test]
+    fn sector_index_tracks_next_gate() {
+        let samples = sample_track();
+        let cfg = config::Race {
+            checkpoint_count: 8,
+            ..Default::default()
+        };
+        let mut race = Race::new(&samples, cfg);
+        assert_eq!(race.sector(), 1);
+        assert_eq!(race.sector_count(), 8);
+        let gate = race.checkpoints[1];
+        race.update(gate, 0.0);
+        assert_eq!(race.sector(), 2);
+        race.next_checkpoint = 0;
+        assert_eq!(race.sector(), 8);
+    }
+
+    #[test]
+    fn mid_gate_emits_sector_and_tracks_best() {
+        let samples = sample_track();
+        let cfg = config::Race {
+            checkpoint_count: 8,
+            ..Default::default()
+        };
+        let mut race = Race::new(&samples, cfg);
+        // Start at CP1.
+        let start = race.checkpoints[1];
+        assert!(race.update(start, 0.0).is_none());
+        assert!(race.started);
+        assert_eq!(race.best_sector, None);
+
+        // Drive toward CP2 with time on the clock.
+        let next = race.checkpoints[2];
+        let away = -next;
+        for _ in 0..20 {
+            assert!(race.update(away, 0.05).is_none());
+        }
+        let sector_t = race.current_sector_time();
+        assert!((0.95..=1.05).contains(&sector_t), "got {sector_t}");
+
+        match race.update(next, 0.0) {
+            Some(RaceEvent::SectorComplete {
+                sector_time,
+                is_best,
+            }) => {
+                assert!(is_best);
+                assert!((0.95..=1.05).contains(&sector_time), "got {sector_time}");
+                assert_eq!(race.best_sector, Some(sector_time));
+                assert_eq!(race.last_sector_time, Some(sector_time));
+            }
+            other => panic!("expected SectorComplete, got {other:?}"),
+        }
+
+        // Slower next sector is not a best.
+        let next2 = race.checkpoints[3];
+        for _ in 0..40 {
+            assert!(race.update(-next2, 0.05).is_none());
+        }
+        match race.update(next2, 0.0) {
+            Some(RaceEvent::SectorComplete { is_best, .. }) => assert!(!is_best),
+            other => panic!("expected SectorComplete, got {other:?}"),
+        }
+        let best = race.best_sector.expect("best sector set");
+        let last = race.last_sector_time.expect("last sector set");
+        assert!(best < last);
+    }
+
+    #[test]
     fn progress_score_orders_by_lap_then_frac() {
         let samples = sample_track();
         let mut behind = Race::new(&samples, config::Race::default());
@@ -250,11 +361,15 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_best_lap() {
+    fn reset_clears_best_lap_and_sector() {
         let samples = sample_track();
         let mut race = Race::new(&samples, config::Race::default());
         race.best_lap = Some(40.0);
+        race.best_sector = Some(8.0);
+        race.last_sector_time = Some(9.0);
         race.reset();
         assert_eq!(race.best_lap, None);
+        assert_eq!(race.best_sector, None);
+        assert_eq!(race.last_sector_time, None);
     }
 }

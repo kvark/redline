@@ -25,8 +25,10 @@ Pre-race flow should read as entering a circuit: pick **Craft**, pick **Circuit*
 countdown (drive locked until GO); Esc cancels back to the menu. Crossing the
 line flashes lap time / **FINAL LAP** / **FINISH** callouts (visual only), then a
 brief **results** board (place P1–Pn, race / lap times) before Continue / auto-return
-to the menu. The race HUD shows live **place**, ticking lap time, best/last, and
-LAP X/Y. Scripts and smoke tests skip the menu, countdown, and results board for
+to the menu. Mid-lap gates track **sector** splits: the HUD shows current sector
+time and best sector, with a brief **BEST SECTOR** flash on a personal best.
+The race HUD also shows live **place**, ticking lap time, best/last, and LAP X/Y.
+Scripts and smoke tests skip the menu, countdown, and results board for
 automation; callouts never block drive.
 
 ## Craft handling
