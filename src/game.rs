@@ -64,7 +64,7 @@ pub struct Game {
     recovered_this_step: u8,
     /// Championship 3-2-1-GO; None means racing (or scripts/smoke).
     start_countdown: Option<countdown::StartCountdown>,
-    /// Brief lap / FINAL LAP / FINISH banner (visual only; never blocks drive).
+    /// Brief lap / FINAL LAP / FINISH / best-sector banner (visual only; never blocks drive).
     lap_callout: Option<lap_callout::LapCallout>,
     /// Post-FINISH placement board; skipped for scripts/smoke.
     race_results: Option<results::RaceResults>,
@@ -471,19 +471,30 @@ impl Game {
 
     fn on_race_event(&mut self, event: race::RaceEvent) {
         // Visual only — never gates controls or scripts.
-        self.lap_callout = Some(match event {
-            race::RaceEvent::Finished { .. } => lap_callout::LapCallout::finish(),
+        match event {
+            race::RaceEvent::Finished { .. } => {
+                self.lap_callout = Some(lap_callout::LapCallout::finish());
+            }
             race::RaceEvent::LapComplete {
                 lap_time,
                 entering_final,
             } => {
-                if entering_final {
+                self.lap_callout = Some(if entering_final {
                     lap_callout::LapCallout::final_lap(lap_time)
                 } else {
                     lap_callout::LapCallout::lap_complete(lap_time)
+                });
+            }
+            race::RaceEvent::SectorComplete {
+                sector_time,
+                is_best,
+            } => {
+                // Light gate flash only on a new best; never stomps lap banners.
+                if is_best && self.lap_callout.is_none() {
+                    self.lap_callout = Some(lap_callout::LapCallout::sector_best(sector_time));
                 }
             }
-        });
+        }
     }
 
     fn emit_dust(&mut self, pose: &Isometry, dt: f32) {

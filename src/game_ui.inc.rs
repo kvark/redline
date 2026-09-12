@@ -274,21 +274,30 @@ impl Game {
         if self.start_countdown.is_some() {
             return;
         }
-        let (title, subtitle, color) = match banner.kind() {
+        let (title, subtitle, color, title_size) = match banner.kind() {
             lap_callout::CalloutKind::LapComplete { lap_time } => (
                 "LAP",
                 Some(format_time(lap_time)),
                 egui::Color32::from_rgb(120, 220, 255),
+                64.0,
             ),
             lap_callout::CalloutKind::FinalLap { previous_lap } => (
                 "FINAL LAP",
                 Some(format_time(previous_lap)),
                 egui::Color32::from_rgb(255, 90, 90),
+                72.0,
             ),
             lap_callout::CalloutKind::Finish => (
                 "FINISH",
                 self.race.last_lap_time.map(format_time),
                 egui::Color32::from_rgb(120, 255, 140),
+                64.0,
+            ),
+            lap_callout::CalloutKind::SectorBest { sector_time } => (
+                "BEST SECTOR",
+                Some(format_time(sector_time)),
+                egui::Color32::from_rgb(200, 120, 255),
+                42.0,
             ),
         };
         egui::Area::new(egui::Id::new("lap_callout"))
@@ -298,16 +307,7 @@ impl Game {
                 ui.vertical_centered(|ui| {
                     ui.label(
                         egui::RichText::new(title)
-                            .size(
-                                if matches!(
-                                    banner.kind(),
-                                    lap_callout::CalloutKind::FinalLap { .. }
-                                ) {
-                                    72.0
-                                } else {
-                                    64.0
-                                },
-                            )
+                            .size(title_size)
                             .strong()
                             .color(color),
                     );
@@ -470,6 +470,16 @@ impl Game {
             progress * 100.0,
             self.planet.radius
         ));
+        ui.label(format!(
+            "Sec   {}",
+            format_time(self.race.current_sector_time())
+        ));
+        if let Some(best_sec) = self.race.best_sector {
+            ui.label(
+                egui::RichText::new(format!("Best sec  {}", format_time(best_sec)))
+                    .color(egui::Color32::from_rgb(200, 120, 255)),
+            );
+        }
         ui.label(format!("Lap   {}", format_time(self.race.current_lap_time())));
         if let Some(best) = self.race.best_lap {
             ui.label(format!("Best  {}", format_time(best)));

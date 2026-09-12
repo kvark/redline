@@ -1,4 +1,5 @@
-//! Brief championship banners when crossing the line: lap time, FINAL LAP, FINISH.
+//! Brief championship banners when crossing the line: lap time, FINAL LAP, FINISH,
+//! plus a light BEST SECTOR flash on a personal-best gate split.
 
 /// How long a completed-lap time flash stays up.
 pub const LAP_HOLD_SECS: f32 = 1.35;
@@ -6,6 +7,8 @@ pub const LAP_HOLD_SECS: f32 = 1.35;
 pub const FINAL_HOLD_SECS: f32 = 1.75;
 /// How long FINISH stays up after the checker.
 pub const FINISH_HOLD_SECS: f32 = 2.2;
+/// How long a best-sector gate flash stays up (lighter than lap banners).
+pub const SECTOR_HOLD_SECS: f32 = 0.95;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CalloutKind {
@@ -15,6 +18,8 @@ pub enum CalloutKind {
     FinalLap { previous_lap: f32 },
     /// Race over.
     Finish,
+    /// Personal-best sector split at a mid-lap gate.
+    SectorBest { sector_time: f32 },
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +50,13 @@ impl LapCallout {
         }
     }
 
+    pub fn sector_best(sector_time: f32) -> Self {
+        Self {
+            kind: CalloutKind::SectorBest { sector_time },
+            elapsed: 0.0,
+        }
+    }
+
     /// Advance by a physics step. Returns `true` when the banner should clear.
     pub fn tick(&mut self, dt: f32) -> bool {
         self.elapsed = (self.elapsed + dt.max(0.0)).min(self.hold());
@@ -64,13 +76,14 @@ impl LapCallout {
             CalloutKind::LapComplete { .. } => LAP_HOLD_SECS,
             CalloutKind::FinalLap { .. } => FINAL_HOLD_SECS,
             CalloutKind::Finish => FINISH_HOLD_SECS,
+            CalloutKind::SectorBest { .. } => SECTOR_HOLD_SECS,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CalloutKind, FINAL_HOLD_SECS, LapCallout};
+    use super::{CalloutKind, FINAL_HOLD_SECS, LapCallout, SECTOR_HOLD_SECS};
 
     #[test]
     fn final_lap_clears_after_hold() {
@@ -85,5 +98,14 @@ mod tests {
     fn lap_complete_keeps_time() {
         let c = LapCallout::lap_complete(42.5);
         assert_eq!(c.kind(), CalloutKind::LapComplete { lap_time: 42.5 });
+    }
+
+    #[test]
+    fn sector_best_is_brief() {
+        let mut c = LapCallout::sector_best(11.2);
+        assert_eq!(c.kind(), CalloutKind::SectorBest { sector_time: 11.2 });
+        assert!(!c.tick(SECTOR_HOLD_SECS * 0.5));
+        assert!(c.tick(SECTOR_HOLD_SECS));
+        assert!(c.is_finished());
     }
 }
