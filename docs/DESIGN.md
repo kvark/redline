@@ -22,3 +22,12 @@ licensed remake.
 
 Pre-race flow should read as entering a circuit: pick **Craft**, pick **Circuit**,
 **Enter Circuit**. Scripts and smoke tests skip the menu for automation.
+
+## Craft handling
+
+Menu crafts are not cosmetics only: each `VehicleId` kit scales drive feel off the
+Vector Spear baseline in `assets/vehicle.ron` (drive factor, motor force, mass,
+wheel friction, lateral grip, jump). `RaceFuture` / Vector Spear keeps `kit =
+None` so smoke scripts and the default garage pick stay on the ron numbers. AI
+that reuse `KIT_*` share the same personality as the matching player craft.
+
