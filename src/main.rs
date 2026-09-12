@@ -22,6 +22,7 @@ mod control;
 mod countdown;
 mod game;
 mod glb;
+mod lap_callout;
 mod menu;
 mod planet;
 mod race;

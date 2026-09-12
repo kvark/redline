@@ -22,8 +22,10 @@ licensed remake.
 
 Pre-race flow should read as entering a circuit: pick **Craft**, pick **Circuit**,
 **Enter Circuit**. Interactive starts hold the grid for a championship **3-2-1-GO**
-countdown (drive locked until GO); Esc cancels back to the menu. Scripts and smoke
-tests skip the menu and the countdown for automation.
+countdown (drive locked until GO); Esc cancels back to the menu. Crossing the
+line flashes lap time / **FINAL LAP** / **FINISH** callouts (visual only).
+The race HUD shows ticking lap time, best/last, and LAP X/Y. Scripts and smoke
+tests skip the menu and the countdown for automation; callouts never block drive.
 
 ## Craft handling
 
