@@ -147,6 +147,10 @@ impl Game {
         self.vehicle.teleport(&mut self.engine, &self.spawn);
         self.race.reset();
         self.lap_callout = None;
+        self.race_results = None;
+        for driver in self.ai_drivers.iter_mut() {
+            driver.race.reset();
+        }
     }
 
     fn recover(&mut self) {
@@ -186,6 +190,7 @@ impl Game {
                     .show_inside(egui_ctx, |ui| self.populate_hud(ui));
                 self.populate_countdown(egui_ctx);
                 self.populate_lap_callout(egui_ctx);
+                self.populate_results(egui_ctx);
             }
         });
 
@@ -317,6 +322,74 @@ impl Game {
             });
     }
 
+    fn populate_results(&mut self, ui: &egui::Ui) {
+        let Some(board) = self.race_results.as_ref() else {
+            return;
+        };
+        if self.start_countdown.is_some() || self.lap_callout.is_some() {
+            return;
+        }
+        let place = board.place;
+        let field = board.field;
+        let race_time = board.race_time;
+        let best_lap = board.best_lap;
+        let last_lap = board.last_lap;
+        let mut continue_clicked = false;
+        egui::Area::new(egui::Id::new("race_results"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -24.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(&ui.ctx().global_style())
+                    .inner_margin(egui::Margin::symmetric(28, 20))
+                    .show(ui, |ui| {
+                        ui.set_min_width(280.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                egui::RichText::new("RESULTS")
+                                    .size(28.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(120, 220, 255)),
+                            );
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(format!("P{place} / {field}"))
+                                    .size(64.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(120, 255, 140)),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(format!("Race  {}", format_time(race_time)))
+                                    .size(22.0)
+                                    .color(egui::Color32::from_rgba_unmultiplied(240, 240, 240, 230)),
+                            );
+                            if let Some(best) = best_lap {
+                                ui.label(format!("Best lap  {}", format_time(best)));
+                            }
+                            if let Some(last) = last_lap {
+                                ui.label(format!("Last lap  {}", format_time(last)));
+                            }
+                            ui.add_space(14.0);
+                            if ui
+                                .add_sized([160.0, 32.0], egui::Button::new("Continue"))
+                                .clicked()
+                            {
+                                continue_clicked = true;
+                            }
+                            ui.label(
+                                egui::RichText::new("Esc · auto-return")
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgba_unmultiplied(200, 200, 200, 160)),
+                            );
+                        });
+                    });
+            });
+        if continue_clicked {
+            self.race_results = None;
+            self.open_menu();
+        }
+    }
+
     fn populate_menu(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical_centered(|ui| {
@@ -371,6 +444,14 @@ impl Game {
         ui.separator();
         let pose = self.vehicle.pose(&self.engine);
         let (_cp, progress) = planet::track_progress(pose.position, &self.planet.track);
+        let place = self.live_place();
+        let field = self.field_size();
+        ui.label(
+            egui::RichText::new(format!("P{place} / {field}"))
+                .size(26.0)
+                .strong()
+                .color(egui::Color32::from_rgb(120, 255, 140)),
+        );
         ui.label(
             egui::RichText::new(format!(
                 "LAP {} / {}",

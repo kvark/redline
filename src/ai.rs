@@ -1,7 +1,9 @@
-use crate::{config, control, planet, vehicle};
+use crate::{config, control, planet, race, vehicle};
 
 pub struct Driver {
     pub vehicle: vehicle::Vehicle,
+    /// Checkpoint / lap progress for live place + finish order.
+    pub race: race::Race,
     steering: f32,
     target_speed: f32,
     lateral_offset: f32,
@@ -27,6 +29,8 @@ impl Driver {
         let vehicle = vehicle::spawn(engine, config, pose, Some(kit));
         Self {
             vehicle,
+            // Same default race config as the player (shared checkpoint grid).
+            race: race::Race::new(track, config::Race::default()),
             steering: 0.0,
             target_speed,
             lateral_offset,

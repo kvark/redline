@@ -109,8 +109,28 @@ impl Race {
         self.finished = false;
         self.time = 0.0;
         self.last_lap_time = None;
+        self.best_lap = None;
         self.lap_start = 0.0;
     }
+
+    /// Higher means further ahead. Finished racers beat anyone still racing;
+    /// among finishers, earlier race time ranks higher.
+    pub fn progress_score(&self, track_frac: f32) -> f64 {
+        if self.finished {
+            // Large base so finishers sort above the field; subtract time for order.
+            return 1_000_000.0 + (100_000.0 - self.time as f64);
+        }
+        let frac = track_frac.clamp(0.0, 0.999_999) as f64;
+        (self.lap.saturating_sub(1) as f64) + frac
+    }
+}
+
+/// 1-based place for the player among `opponent_scores` (higher score = ahead).
+pub fn player_place(player_score: f64, opponent_scores: impl IntoIterator<Item = f64>) -> usize {
+    1 + opponent_scores
+        .into_iter()
+        .filter(|&score| score > player_score)
+        .count()
 }
 
 fn angular_close(a: glam::Vec3, b: glam::Vec3, max_angle: f32) -> bool {
@@ -194,5 +214,47 @@ mod tests {
         }
         let t = race.current_lap_time();
         assert!((1.2..=1.3).contains(&t), "got {t}");
+    }
+
+    #[test]
+    fn progress_score_orders_by_lap_then_frac() {
+        let samples = sample_track();
+        let mut behind = Race::new(&samples, config::Race::default());
+        let mut ahead = Race::new(&samples, config::Race::default());
+        ahead.lap = 2;
+        assert!(ahead.progress_score(0.1) > behind.progress_score(0.9));
+        behind.lap = 2;
+        assert!(behind.progress_score(0.8) > ahead.progress_score(0.1));
+    }
+
+    #[test]
+    fn finished_racer_beats_field_and_earlier_time_wins() {
+        let samples = sample_track();
+        let mut done_fast = Race::new(&samples, config::Race::default());
+        let mut done_slow = Race::new(&samples, config::Race::default());
+        let mut racing = Race::new(&samples, config::Race::default());
+        done_fast.finished = true;
+        done_fast.time = 90.0;
+        done_slow.finished = true;
+        done_slow.time = 110.0;
+        racing.lap = 3;
+        assert!(done_fast.progress_score(0.0) > racing.progress_score(0.99));
+        assert!(done_fast.progress_score(0.0) > done_slow.progress_score(0.0));
+        assert_eq!(
+            super::player_place(
+                done_slow.progress_score(0.0),
+                [done_fast.progress_score(0.0), racing.progress_score(0.5)]
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn reset_clears_best_lap() {
+        let samples = sample_track();
+        let mut race = Race::new(&samples, config::Race::default());
+        race.best_lap = Some(40.0);
+        race.reset();
+        assert_eq!(race.best_lap, None);
     }
 }
