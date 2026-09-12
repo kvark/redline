@@ -30,10 +30,10 @@ impl VehicleId {
 
     pub fn blurb(self) -> &'static str {
         match self {
-            Self::RaceFuture => "Flagship anti-grav craft — clean lines, brutal top end.",
-            Self::Hatchback => "Hot hatch energy on a ribbon — snappy and loud.",
-            Self::SedanSports => "Low coupe with cool-blue livery and long gears.",
-            Self::Taxi => "Championship wildcard — yellow streak, no dignity.",
+            Self::RaceFuture => "Flagship anti-grav craft — clean lines, championship baseline.",
+            Self::Hatchback => "Hot hatch on a ribbon — light, snappy throttle, sticky tires.",
+            Self::SedanSports => "Low coupe — softer launch, planted grip, long-gear feel.",
+            Self::Taxi => "Championship wildcard — heavy chassis, lazy jump, loose rear.",
         }
     }
 
@@ -47,11 +47,20 @@ impl VehicleId {
     }
 }
 
+// Drive-feel scales are relative to assets/vehicle.ron (Vector Spear baseline).
+// AI opponents reuse these kits, so player and field share the same personality.
+
 pub const KIT_HATCH: vehicle::Kit = vehicle::Kit {
     body_model: "models/hatchback-sports-body.glb",
     wheel_model: "models/wheel-racing.glb",
     tint: [1.0, 0.42, 0.32, 1.0],
     half_track: 0.32,
+    drive_factor_scale: 1.28,
+    motor_max_force_scale: 1.15,
+    body_mass_scale: 0.82,
+    wheel_friction_scale: 1.12,
+    grip_scale: 1.18,
+    jump_impulse: Some(16.5),
 };
 
 pub const KIT_SEDAN: vehicle::Kit = vehicle::Kit {
@@ -59,6 +68,12 @@ pub const KIT_SEDAN: vehicle::Kit = vehicle::Kit {
     wheel_model: "models/wheel-dark.glb",
     tint: [0.42, 0.72, 1.0, 1.0],
     half_track: 0.32,
+    drive_factor_scale: 0.78,
+    motor_max_force_scale: 1.05,
+    body_mass_scale: 1.05,
+    wheel_friction_scale: 1.08,
+    grip_scale: 1.22,
+    jump_impulse: Some(11.0),
 };
 
 pub const KIT_TAXI: vehicle::Kit = vehicle::Kit {
@@ -66,6 +81,12 @@ pub const KIT_TAXI: vehicle::Kit = vehicle::Kit {
     wheel_model: "models/wheel-dark.glb",
     tint: [1.0, 1.0, 1.0, 1.0],
     half_track: 0.32,
+    drive_factor_scale: 0.88,
+    motor_max_force_scale: 1.25,
+    body_mass_scale: 1.28,
+    wheel_friction_scale: 0.88,
+    grip_scale: 0.86,
+    jump_impulse: Some(8.0),
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -136,5 +157,23 @@ impl MapId {
                 ..config::Planet::default()
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn craft_kits_differ_in_drive_feel() {
+        assert!(KIT_HATCH.body_mass_scale < 1.0);
+        assert!(KIT_HATCH.drive_factor_scale > 1.0);
+        assert!(KIT_SEDAN.drive_factor_scale < 1.0);
+        assert!(KIT_SEDAN.grip_scale > 1.0);
+        assert!(KIT_TAXI.body_mass_scale > 1.0);
+        assert!(KIT_TAXI.grip_scale < 1.0);
+        assert_ne!(KIT_HATCH.jump_impulse, KIT_TAXI.jump_impulse);
+        assert!(VehicleId::RaceFuture.kit().is_none());
+        assert!(VehicleId::Hatchback.kit().is_some());
     }
 }

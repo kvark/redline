@@ -22,6 +22,7 @@ pub struct Vehicle {
     pub wheels: Vec<Wheel>,
     wheel_radius: f32,
     wheel_mass: f32,
+    grip_scale: f32,
     stuck_time: f32,
     inverted_time: f32,
     prev_speed: f32,
@@ -29,14 +30,29 @@ pub struct Vehicle {
     recoil: f32,
 }
 
-/// Visual / stance override used so opponents are not clones of the player car.
+/// Visual / stance / drive-feel override so crafts (and AI sharing a kit) differ.
 #[derive(Clone, Copy)]
 pub struct Kit {
     pub body_model: &'static str,
     pub wheel_model: &'static str,
     pub tint: [f32; 4],
     pub half_track: f32,
+    /// Wheel spin motor damping scale vs `vehicle.ron` `drive_factor`.
+    pub drive_factor_scale: f32,
+    /// Wheel spin motor max-force scale vs the baseline (240).
+    pub motor_max_force_scale: f32,
+    /// Multiplier on `vehicle.ron` `body_mass`.
+    pub body_mass_scale: f32,
+    /// Wheel collider friction scale vs `vehicle.ron`.
+    pub wheel_friction_scale: f32,
+    /// Lateral grip assist scale in [`Vehicle::drive`] (1.0 = baseline).
+    pub grip_scale: f32,
+    /// Override jump impulse; `None` keeps `vehicle.ron`.
+    pub jump_impulse: Option<f32>,
 }
+
+/// Baseline wheel-spin motor max force when no kit overrides it.
+pub const BASE_MOTOR_MAX_FORCE: f32 = 240.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Isometry {
@@ -86,8 +102,31 @@ pub fn spawn(
     pose: Isometry,
     kit: Option<Kit>,
 ) -> Vehicle {
+    let drive_factor = match kit {
+        Some(kit) => veh_config.drive_factor * kit.drive_factor_scale,
+        None => veh_config.drive_factor,
+    };
+    let motor_max_force = match kit {
+        Some(kit) => BASE_MOTOR_MAX_FORCE * kit.motor_max_force_scale,
+        None => BASE_MOTOR_MAX_FORCE,
+    };
+    let body_mass = match kit {
+        Some(kit) => veh_config.body_mass * kit.body_mass_scale,
+        None => veh_config.body_mass,
+    };
+    let grip_scale = kit.map(|kit| kit.grip_scale).unwrap_or(1.0);
+    let jump_impulse = match kit {
+        Some(Kit {
+            jump_impulse: Some(impulse),
+            ..
+        }) => impulse,
+        _ => veh_config.jump_impulse,
+    };
+
     let mut body_visual = clone_visual(&veh_config.body.visual);
     let mut wheel_visual = clone_visual(&veh_config.wheel.visual);
+    let mut body_collider = clone_collider(&veh_config.body.collider);
+    let mut wheel_collider = clone_collider(&veh_config.wheel.collider);
     if let Some(kit) = kit {
         body_visual.model = kit.body_model.to_string();
         body_visual.pos = mint::Vector3 {
@@ -103,11 +142,13 @@ pub fn spawn(
             z: 0.0,
         };
         wheel_visual.model = kit.wheel_model.to_string();
+        wheel_collider.friction *= kit.wheel_friction_scale;
+        body_collider.friction *= kit.wheel_friction_scale;
     }
     let body_config = blade_engine::config::Object {
         name: "vehicle/body".to_string(),
         visuals: vec![body_visual],
-        colliders: vec![clone_collider(&veh_config.body.collider)],
+        colliders: vec![body_collider],
         additional_mass: None,
     };
     let body_handle = engine.add_object(
@@ -120,15 +161,16 @@ pub fn spawn(
         engine.set_color_tint(body_handle, kit.tint);
     }
 
-    let wheel_radius = shape_radius(&veh_config.wheel.collider.shape).unwrap_or(0.28);
+    let wheel_radius = shape_radius(&wheel_collider.shape).unwrap_or(0.28);
     let mut vehicle = Vehicle {
         body_handle,
-        jump_impulse: veh_config.jump_impulse,
+        jump_impulse,
         roll_impulse: veh_config.roll_impulse,
-        body_mass: veh_config.body_mass,
+        body_mass,
         wheels: Vec::new(),
         wheel_radius,
         wheel_mass: 8.0,
+        grip_scale,
         stuck_time: 0.0,
         inverted_time: 0.0,
         prev_speed: 0.0,
@@ -138,7 +180,7 @@ pub fn spawn(
     let wheel_config = blade_engine::config::Object {
         name: "vehicle/wheel".to_string(),
         visuals: vec![wheel_visual],
-        colliders: vec![clone_collider(&veh_config.wheel.collider)],
+        colliders: vec![wheel_collider],
         additional_mass: None,
     };
     let suspender_config = blade_engine::config::Object {
@@ -182,8 +224,8 @@ pub fn spawn(
                     limits: None,
                     motor: Some(blade_engine::config::Motor {
                         stiffness: 0.0,
-                        damping: veh_config.drive_factor,
-                        max_force: 240.0,
+                        damping: drive_factor,
+                        max_force: motor_max_force,
                     }),
                 }),
                 y: None,
@@ -354,7 +396,7 @@ impl Vehicle {
             let lateral = linear - forward * forward_speed - up * linear.dot(up);
             // Hands-off uses strong sideslip kill; while steered keep a milder
             // grip so the car does not skate off the outside of a bend.
-            let grip = 2.4 + 4.2 * hold;
+            let grip = (2.4 + 4.2 * hold) * self.grip_scale;
             if grip > 0.0 && lateral.length_squared() > 1e-6 {
                 engine.apply_linear_impulse(
                     self.body_handle,
