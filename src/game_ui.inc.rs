@@ -44,31 +44,34 @@ impl Game {
                 ..
             } => {
                 let pressed = state == winit::event::ElementState::Pressed;
+                // Throttle/steer may be held through the lights; impulses wait for GO.
+                let on_grid = !self.in_menu;
+                let drive_ok = on_grid && !self.countdown_locks_drive();
                 match key_code {
                     winit::keyboard::KeyCode::ArrowUp | winit::keyboard::KeyCode::KeyW
-                        if !self.in_menu =>
+                        if on_grid =>
                     {
                         self.throttle_forward = pressed;
                     }
                     winit::keyboard::KeyCode::ArrowDown | winit::keyboard::KeyCode::KeyS
-                        if !self.in_menu =>
+                        if on_grid =>
                     {
                         self.throttle_reverse = pressed;
                     }
                     winit::keyboard::KeyCode::ArrowLeft | winit::keyboard::KeyCode::KeyA
-                        if !self.in_menu =>
+                        if on_grid =>
                     {
                         self.steer_left = pressed;
                     }
                     winit::keyboard::KeyCode::ArrowRight | winit::keyboard::KeyCode::KeyD
-                        if !self.in_menu =>
+                        if on_grid =>
                     {
                         self.steer_right = pressed;
                     }
-                    winit::keyboard::KeyCode::KeyR if pressed && !self.in_menu => {
+                    winit::keyboard::KeyCode::KeyR if pressed && drive_ok => {
                         self.respawn();
                     }
-                    winit::keyboard::KeyCode::Space if pressed && !self.in_menu => {
+                    winit::keyboard::KeyCode::Space if pressed && drive_ok => {
                         let pose = self.vehicle.pose(&self.engine);
                         let up = pose.position.normalize_or_zero();
                         self.engine.apply_linear_impulse(
@@ -76,7 +79,7 @@ impl Game {
                             (self.vehicle.jump_impulse * up).into(),
                         );
                     }
-                    winit::keyboard::KeyCode::Comma if pressed && !self.in_menu => {
+                    winit::keyboard::KeyCode::Comma if pressed && drive_ok => {
                         let pose = self.vehicle.pose(&self.engine);
                         let forward = pose.orientation * glam::Vec3::Z;
                         self.engine.apply_angular_impulse(
@@ -84,7 +87,7 @@ impl Game {
                             (self.vehicle.roll_impulse * forward).into(),
                         );
                     }
-                    winit::keyboard::KeyCode::Period if pressed && !self.in_menu => {
+                    winit::keyboard::KeyCode::Period if pressed && drive_ok => {
                         let pose = self.vehicle.pose(&self.engine);
                         let forward = pose.orientation * glam::Vec3::Z;
                         self.engine.apply_angular_impulse(
@@ -180,6 +183,7 @@ impl Game {
                 egui::Panel::right("hud")
                     .frame(frame)
                     .show_inside(egui_ctx, |ui| self.populate_hud(ui));
+                self.populate_countdown(egui_ctx);
             }
         });
 
@@ -211,6 +215,47 @@ impl Game {
             );
         }
         egui_output.viewport_output[&self.egui_viewport_id].repaint_delay
+    }
+
+
+    fn countdown_locks_drive(&self) -> bool {
+        self.start_countdown
+            .as_ref()
+            .is_some_and(|c| c.controls_locked())
+    }
+
+    fn populate_countdown(&self, ui: &egui::Ui) {
+        let Some(label) = self
+            .start_countdown
+            .as_ref()
+            .and_then(|c| c.label())
+        else {
+            return;
+        };
+        let go = label == "GO";
+        let color = if go {
+            egui::Color32::from_rgb(120, 255, 140)
+        } else {
+            egui::Color32::from_rgb(255, 220, 90)
+        };
+        egui::Area::new(egui::Id::new("start_countdown"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -48.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .size(128.0)
+                        .strong()
+                        .color(color),
+                );
+                if !go {
+                    ui.label(
+                        egui::RichText::new("Hold…")
+                            .size(18.0)
+                            .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 180)),
+                    );
+                }
+            });
     }
 
     fn populate_menu(&mut self, ui: &mut egui::Ui) {
@@ -289,6 +334,12 @@ impl Game {
             ui.colored_label(
                 egui::Color32::from_rgb(220, 160, 90),
                 format!("Off course  {off:.1}m"),
+            );
+        }
+        if self.countdown_locks_drive() {
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 220, 90),
+                "Start lights — drive locked",
             );
         }
         ui.separator();

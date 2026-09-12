@@ -21,7 +21,9 @@ licensed remake.
 ## Menu / UX
 
 Pre-race flow should read as entering a circuit: pick **Craft**, pick **Circuit**,
-**Enter Circuit**. Scripts and smoke tests skip the menu for automation.
+**Enter Circuit**. Interactive starts hold the grid for a championship **3-2-1-GO**
+countdown (drive locked until GO); Esc cancels back to the menu. Scripts and smoke
+tests skip the menu and the countdown for automation.
 
 ## Craft handling
 

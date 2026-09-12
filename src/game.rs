@@ -14,6 +14,7 @@ use web_time as time;
 use crate::ai;
 use crate::config;
 use crate::control;
+use crate::countdown;
 use crate::menu;
 use crate::planet;
 use crate::race;
@@ -59,6 +60,8 @@ pub struct Game {
     sim_time: f32,
     physics_accum: f32,
     recovered_this_step: u8,
+    /// Championship 3-2-1-GO; None means racing (or scripts/smoke).
+    start_countdown: Option<countdown::StartCountdown>,
 }
 
 pub struct QuitEvent;
@@ -254,6 +257,7 @@ impl Game {
             sim_time: 0.0,
             physics_accum: 0.0,
             recovered_this_step: 0,
+            start_countdown: None,
         }
     }
 
@@ -276,6 +280,7 @@ impl Game {
     fn open_menu(&mut self) {
         self.in_menu = true;
         self.is_paused = true;
+        self.start_countdown = None;
         self.throttle_forward = false;
         self.throttle_reverse = false;
         self.steer_left = false;
@@ -306,6 +311,17 @@ impl Game {
         self.last_camera_orient = self.spawn.orientation;
         self.in_menu = false;
         self.is_paused = false;
+        self.throttle_forward = false;
+        self.throttle_reverse = false;
+        self.steer_left = false;
+        self.steer_right = false;
+        self.controller = control::PlayerController::default();
+        // Scripts / smoke skip the lights so automation stays fast.
+        self.start_countdown = if self.script.is_none() && self.smoke_frames_left.is_none() {
+            Some(countdown::StartCountdown::new())
+        } else {
+            None
+        };
         self.window.set_title(&format!(
             "Redline — {} / {}",
             self.menu_vehicle.label(),
@@ -354,17 +370,44 @@ impl Game {
 
     fn step_physics(&mut self, dt: f32) {
         self.sim_time += dt;
-        self.update_vehicle_controls(dt);
-        self.vehicle
-            .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
-        self.vehicle.apply_stability(&mut self.engine, dt);
-        for driver in self.ai_drivers.iter_mut() {
-            driver.update(
-                &mut self.engine,
-                &self.planet.track,
-                self.planet_cfg.gravity,
-                dt,
-            );
+        let countdown_done = self
+            .start_countdown
+            .as_mut()
+            .is_some_and(|lights| lights.tick(dt));
+        if countdown_done {
+            self.start_countdown = None;
+        }
+        let drive_locked = self
+            .start_countdown
+            .as_ref()
+            .is_some_and(|c| c.controls_locked());
+        if drive_locked {
+            // Hold on the grid: gravity/stability still settle the craft, but
+            // player + AI drive stay frozen until GO.
+            self.vehicle.drive(&mut self.engine, 0.0, 0.0, dt);
+            self.vehicle
+                .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
+            self.vehicle.apply_stability(&mut self.engine, dt);
+            for driver in self.ai_drivers.iter_mut() {
+                driver.vehicle.drive(&mut self.engine, 0.0, 0.0, dt);
+                driver
+                    .vehicle
+                    .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
+                driver.vehicle.apply_stability(&mut self.engine, dt);
+            }
+        } else {
+            self.update_vehicle_controls(dt);
+            self.vehicle
+                .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
+            self.vehicle.apply_stability(&mut self.engine, dt);
+            for driver in self.ai_drivers.iter_mut() {
+                driver.update(
+                    &mut self.engine,
+                    &self.planet.track,
+                    self.planet_cfg.gravity,
+                    dt,
+                );
+            }
         }
         self.engine.update(dt);
         self.apply_vehicle_bumps();
@@ -378,7 +421,9 @@ impl Game {
         ));
         let (pose, linear, angular, forward_speed, lateral_speed) =
             self.vehicle.motion(&self.engine);
-        self.race.update(pose.position, dt);
+        if !drive_locked {
+            self.race.update(pose.position, dt);
+        }
         self.emit_dust(&pose, dt);
         self.record_sample(&pose, linear, angular, forward_speed, lateral_speed);
     }

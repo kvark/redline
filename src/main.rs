@@ -19,6 +19,7 @@ compile_error!(
 mod ai;
 mod config;
 mod control;
+mod countdown;
 mod game;
 mod glb;
 mod menu;
