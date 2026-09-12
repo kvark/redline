@@ -1,6 +1,9 @@
 # Redline
 
-Race around a procedurally generated planet. Mars is the first circuit.
+Original futuristic planet-circuit racing (F-Zero / Wipeout energy). Physics-first
+ribbon racing on procedurally generated worlds — Mars is the flagship circuit.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the north star.
 
 Play in the browser: <https://kvark.github.io/redline/>
 
