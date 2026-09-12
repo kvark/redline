@@ -154,7 +154,6 @@ impl Game {
                     depth_bias: 0.08,
                 })
             },
-            ..Default::default()
         });
         // A higher resolution environment keeps individual stars point-like instead of
         // turning every texel into a large square on the sky dome. WebGL is happier
