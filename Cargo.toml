@@ -7,10 +7,10 @@ license = "MIT"
 description = "Race around a procedurally generated planet"
 
 [dependencies]
-blade-engine = { git = "https://github.com/kvark/blade", rev = "07338d682aa403b8dd8e28e82b832d084139dd35" }
-blade-graphics = { git = "https://github.com/kvark/blade", rev = "07338d682aa403b8dd8e28e82b832d084139dd35" }
-blade-particle = { git = "https://github.com/kvark/blade", rev = "07338d682aa403b8dd8e28e82b832d084139dd35" }
-blade-render = { git = "https://github.com/kvark/blade", rev = "07338d682aa403b8dd8e28e82b832d084139dd35" }
+blade-engine = { git = "https://github.com/kvark/blade", rev = "33e2a5b003009acb1329a11207053f2f564db310" }
+blade-graphics = { git = "https://github.com/kvark/blade", rev = "33e2a5b003009acb1329a11207053f2f564db310" }
+blade-particle = { git = "https://github.com/kvark/blade", rev = "33e2a5b003009acb1329a11207053f2f564db310" }
+blade-render = { git = "https://github.com/kvark/blade", rev = "33e2a5b003009acb1329a11207053f2f564db310" }
 egui = "0.34"
 egui-winit = { version = "0.34", default-features = false, features = [
     "links",
@@ -22,6 +22,9 @@ ron = "0.8"
 serde = { version = "1", features = ["serde_derive"] }
 serde_json = "1"
 winit = "0.30"
+
+[build-dependencies]
+serde_json = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"
