@@ -40,3 +40,10 @@ wheel friction, lateral grip, jump). `RaceFuture` / Vector Spear keeps `kit =
 None` so smoke scripts and the default garage pick stay on the ron numbers. AI
 that reuse `KIT_*` share the same personality as the matching player craft.
 
+## Ribbon traction
+
+On-ribbon lateral grip is stronger than runoff (physics-first stickiness, not soft
+arcade hover). Leaving the ribbon far enough to scrub, then re-acquiring it, fires
+a short forward boost pulse — championship recovery after a mistake, shared by
+player and AI kits alike.
+

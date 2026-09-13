@@ -97,6 +97,8 @@ pub struct Sample {
     pub checkpoint: u32,
     pub lap: u32,
     pub recovered: u8,
+    /// Intensity of ribbon re-acquire boost applied this sample (0..1).
+    pub ribbon_boost: f32,
 }
 
 pub struct Recorder {
@@ -120,11 +122,11 @@ impl Recorder {
 
     pub fn finish(&self) {
         let mut body = String::from(
-            "t,throttle,steer,px,py,pz,speed,fwd,lat,yaw,upright,off,head,progress,cp,lap,recovered\n",
+            "t,throttle,steer,px,py,pz,speed,fwd,lat,yaw,upright,off,head,progress,cp,lap,recovered,boost\n",
         );
         for row in self.rows.iter() {
             body.push_str(&format!(
-                "{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{},{},{}\n",
+                "{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{},{},{},{:.3}\n",
                 row.t,
                 row.throttle,
                 row.steer,
@@ -142,6 +144,7 @@ impl Recorder {
                 row.checkpoint,
                 row.lap,
                 row.recovered,
+                row.ribbon_boost,
             ));
         }
         if let Some(parent) = self.path.parent() {
@@ -186,8 +189,10 @@ fn log_summary(script: Script, rows: &[Sample]) {
     let start = rows.first().unwrap().position;
     let end = rows.last().unwrap().position;
     let travelled = start.distance(end);
+    let boost_peaks = rows.iter().filter(|r| r.ribbon_boost > 0.85).count();
+    let max_boost = rows.iter().map(|r| r.ribbon_boost).fold(0.0f32, f32::max);
     log::info!(
-        "trace {} n={} t={:.1}s travelled={:.1} max_speed={:.1} mean_speed={:.1} mean_|lat|={:.2} max_off={:.1} first_off={} min_upright={:.2} recoveries={} stuck_samples={} yaw_flips={} progress={:.2} cp={} lap={}",
+        "trace {} n={} t={:.1}s travelled={:.1} max_speed={:.1} mean_speed={:.1} mean_|lat|={:.2} max_off={:.1} first_off={} min_upright={:.2} recoveries={} stuck_samples={} yaw_flips={} progress={:.2} cp={} lap={} ribbon_boost_peaks={} max_boost={:.2}",
         script.as_str(),
         rows.len(),
         rows.last().unwrap().t,
@@ -206,6 +211,8 @@ fn log_summary(script: Script, rows: &[Sample]) {
         max_progress,
         max_cp,
         max_lap,
+        boost_peaks,
+        max_boost,
     );
 }
 

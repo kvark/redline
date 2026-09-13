@@ -42,6 +42,7 @@ impl Driver {
         &mut self,
         engine: &mut blade_engine::Engine,
         track: &[planet::TrackSample],
+        track_width: f32,
         gravity: f32,
         dt: f32,
     ) {
@@ -80,6 +81,7 @@ impl Driver {
         let desired = reject_from(lane_target - pose.position, up).normalize_or_zero();
         let heading_error = control::signed_heading_error(forward, desired, up);
         let query = planet::query_track(pose.position, track);
+        let off_track = planet::off_track_distance(&query, track_width);
         let lane_error = query.lateral - self.lateral_offset;
         let steering_target = (heading_error * 1.75 - lane_error * 0.03).clamp(-1.0, 1.0);
         let response = if self.vehicle.is_recoiling() {
@@ -100,8 +102,13 @@ impl Driver {
         } else {
             cruise_speed
         };
-        self.vehicle
-            .drive(engine, target_speed, self.steering * steering_limit, dt);
+        self.vehicle.drive(
+            engine,
+            target_speed,
+            self.steering * steering_limit,
+            off_track,
+            dt,
+        );
         self.vehicle.apply_gravity(engine, gravity, dt);
         self.vehicle.apply_stability(engine, dt);
     }

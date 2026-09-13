@@ -396,12 +396,13 @@ impl Game {
         if drive_locked {
             // Hold on the grid: gravity/stability still settle the craft, but
             // player + AI drive stay frozen until GO.
-            self.vehicle.drive(&mut self.engine, 0.0, 0.0, dt);
+            // Grid is on-ribbon; pass 0 so grip bonus applies without arming boost.
+            self.vehicle.drive(&mut self.engine, 0.0, 0.0, 0.0, dt);
             self.vehicle
                 .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
             self.vehicle.apply_stability(&mut self.engine, dt);
             for driver in self.ai_drivers.iter_mut() {
-                driver.vehicle.drive(&mut self.engine, 0.0, 0.0, dt);
+                driver.vehicle.drive(&mut self.engine, 0.0, 0.0, 0.0, dt);
                 driver
                     .vehicle
                     .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
@@ -416,6 +417,7 @@ impl Game {
                 driver.update(
                     &mut self.engine,
                     &self.planet.track,
+                    self.planet.track_width,
                     self.planet_cfg.gravity,
                     dt,
                 );
@@ -548,6 +550,7 @@ impl Game {
             &mut self.engine,
             command.target_speed,
             command.steering_angle,
+            off_track,
             dt,
         );
     }
@@ -560,6 +563,7 @@ impl Game {
         forward_speed: f32,
         lateral_speed: f32,
     ) {
+        let ribbon_boost = self.vehicle.ribbon_boost_intensity();
         let Some(recorder) = self.recorder.as_mut() else {
             return;
         };
@@ -587,6 +591,7 @@ impl Game {
             checkpoint: self.race.next_checkpoint as u32,
             lap: self.race.lap,
             recovered: self.recovered_this_step,
+            ribbon_boost,
         });
     }
 

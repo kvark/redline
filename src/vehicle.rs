@@ -28,6 +28,12 @@ pub struct Vehicle {
     prev_speed: f32,
     hopped: bool,
     recoil: f32,
+    /// True after leaving the ribbon far enough to arm a re-acquire boost.
+    was_off_ribbon: bool,
+    /// Seconds remaining on the post-rejoin boost pulse.
+    ribbon_boost: f32,
+    /// Intensity of ribbon boost applied on the last [`Self::drive`] call.
+    last_ribbon_boost: f32,
 }
 
 /// Visual / stance / drive-feel override so crafts (and AI sharing a kit) differ.
@@ -53,6 +59,17 @@ pub struct Kit {
 
 /// Baseline wheel-spin motor max force when no kit overrides it.
 pub const BASE_MOTOR_MAX_FORCE: f32 = 240.0;
+
+/// Lateral grip multiplier while firmly on the ribbon (`off_track <= 0`).
+pub const RIBBON_GRIP_BONUS: f32 = 1.42;
+/// How far past the verge counts as a real scrub (arms re-acquire boost).
+pub const RIBBON_OFF_ARM_DISTANCE: f32 = 0.35;
+/// Duration of the championship re-acquire boost pulse.
+pub const RIBBON_REACQUIRE_SECS: f32 = 0.55;
+/// Peak extra target-speed fraction during re-acquire (1.0 + this).
+pub const RIBBON_REACQUIRE_SPEED_BONUS: f32 = 0.26;
+/// Forward accel (m/s²) scale for the re-acquire impulse at peak intensity.
+pub const RIBBON_REACQUIRE_ACCEL: f32 = 20.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Isometry {
@@ -176,6 +193,9 @@ pub fn spawn(
         prev_speed: 0.0,
         hopped: false,
         recoil: 0.0,
+        was_off_ribbon: false,
+        ribbon_boost: 0.0,
+        last_ribbon_boost: 0.0,
     };
     let wheel_config = blade_engine::config::Object {
         name: "vehicle/wheel".to_string(),
@@ -328,12 +348,40 @@ fn straight_line_hold(steering_angle: f32) -> f32 {
     1.0 - t * t
 }
 
+/// Extra lateral grip while on the ribbon; kits still scale via `grip_scale`.
+pub fn ribbon_grip_factor(off_track: f32) -> f32 {
+    if off_track <= 0.0 {
+        RIBBON_GRIP_BONUS
+    } else {
+        1.0
+    }
+}
+
+/// Tick re-acquire boost state. Returns intensity in [0, 1] for this frame.
+pub fn tick_ribbon_reacquire(was_off: &mut bool, boost: &mut f32, off_track: f32, dt: f32) -> f32 {
+    if off_track > RIBBON_OFF_ARM_DISTANCE {
+        *was_off = true;
+    }
+    if off_track <= 0.0 && *was_off {
+        *boost = RIBBON_REACQUIRE_SECS;
+        *was_off = false;
+    }
+    if *boost > 0.0 {
+        let intensity = (*boost / RIBBON_REACQUIRE_SECS).clamp(0.0, 1.0);
+        *boost = (*boost - dt).max(0.0);
+        intensity
+    } else {
+        0.0
+    }
+}
+
 impl Vehicle {
     pub fn drive(
         &mut self,
         engine: &mut blade_engine::Engine,
         target_speed: f32,
         steering_angle: f32,
+        off_track: f32,
         dt: f32,
     ) {
         let mut target_speed = target_speed;
@@ -341,6 +389,17 @@ impl Vehicle {
             let damp = (self.recoil / 0.5).clamp(0.0, 1.0);
             self.recoil = (self.recoil - dt).max(0.0);
             target_speed *= 1.0 - 0.75 * damp;
+        }
+        let boost = tick_ribbon_reacquire(
+            &mut self.was_off_ribbon,
+            &mut self.ribbon_boost,
+            off_track,
+            dt,
+        );
+        self.last_ribbon_boost = boost;
+        if boost > 0.0 {
+            // Championship recovery: short shove + throttle bite after scrub→rejoin.
+            target_speed *= 1.0 + RIBBON_REACQUIRE_SPEED_BONUS * boost;
         }
         engine.wake_up(self.body_handle);
         let pose = self.pose(engine);
@@ -395,13 +454,18 @@ impl Vehicle {
             );
             let lateral = linear - forward * forward_speed - up * linear.dot(up);
             // Hands-off uses strong sideslip kill; while steered keep a milder
-            // grip so the car does not skate off the outside of a bend.
-            let grip = (2.4 + 4.2 * hold) * self.grip_scale;
+            // grip so the car does not skate off the outside of a bend. On-ribbon
+            // multiplies traction so the craft feels planted on the racing line.
+            let grip = (2.4 + 4.2 * hold) * self.grip_scale * ribbon_grip_factor(off_track);
             if grip > 0.0 && lateral.length_squared() > 1e-6 {
                 engine.apply_linear_impulse(
                     self.body_handle,
                     (-lateral * self.body_mass * grip * step).into(),
                 );
+            }
+            if boost > 0.0 {
+                let shove = forward * self.body_mass * RIBBON_REACQUIRE_ACCEL * boost * step;
+                engine.apply_linear_impulse(self.body_handle, shove.into());
             }
         }
 
@@ -413,6 +477,10 @@ impl Vehicle {
             let shove = forward * target_speed.signum() * self.body_mass * 7.0 * step;
             engine.apply_linear_impulse(self.body_handle, shove.into());
         }
+    }
+
+    pub fn ribbon_boost_intensity(&self) -> f32 {
+        self.last_ribbon_boost
     }
 
     pub fn apply_gravity(&self, engine: &mut blade_engine::Engine, gravity: f32, dt: f32) {
@@ -496,6 +564,9 @@ impl Vehicle {
         self.prev_speed = 0.0;
         self.hopped = false;
         self.recoil = 0.0;
+        self.was_off_ribbon = false;
+        self.ribbon_boost = 0.0;
+        self.last_ribbon_boost = 0.0;
         let up = pose.position.normalize_or_zero();
         let fwd = (pose.orientation * glam::Vec3::Z).reject_from(up);
         if fwd.length_squared() > 1e-5 {
@@ -803,5 +874,39 @@ mod tests {
         assert!((recovered.orientation * glam::Vec3::Y).dot(up) > 0.95);
         assert!(recovered.position.x.abs() < pose.position.x.abs());
         assert!(recovered.position.y > pose.position.y);
+    }
+
+    #[test]
+    fn ribbon_grip_is_stickier_on_track() {
+        assert!((ribbon_grip_factor(-1.0) - RIBBON_GRIP_BONUS).abs() < 1e-6);
+        assert!((ribbon_grip_factor(0.0) - RIBBON_GRIP_BONUS).abs() < 1e-6);
+        assert_eq!(ribbon_grip_factor(0.5), 1.0);
+        assert!(ribbon_grip_factor(-0.1) > ribbon_grip_factor(2.0));
+    }
+
+    #[test]
+    fn scrub_then_rejoin_fires_boost_pulse() {
+        let mut was_off = false;
+        let mut boost = 0.0;
+        // Edge kiss does not arm.
+        assert_eq!(
+            tick_ribbon_reacquire(&mut was_off, &mut boost, 0.1, 0.05),
+            0.0
+        );
+        assert!(!was_off);
+        // Deep scrub arms.
+        assert_eq!(
+            tick_ribbon_reacquire(&mut was_off, &mut boost, 1.2, 0.05),
+            0.0
+        );
+        assert!(was_off);
+        // Rejoin starts the pulse at full intensity.
+        let first = tick_ribbon_reacquire(&mut was_off, &mut boost, -0.2, 0.05);
+        assert!((first - 1.0).abs() < 1e-5);
+        assert!(!was_off);
+        assert!(boost > 0.0);
+        // Subsequent ticks decay.
+        let second = tick_ribbon_reacquire(&mut was_off, &mut boost, -0.2, 0.1);
+        assert!(second > 0.0 && second < first);
     }
 }
