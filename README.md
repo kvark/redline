@@ -77,4 +77,4 @@ Pushes to `main` build the WASM target and deploy it to GitHub Pages.
 
 Controls: `W/↑` throttle, `S/↓` brake, `A/D` steer, `R` respawn, `Space` jump, `,/.` roll, `Esc` opens the menu while racing (quit from the menu on native).
 
-Kenney models are CC0; licenses are in `assets/licenses/`. Generated planet meshes go to `assets/generated/` and are not committed.
+Kenney models are CC0; licenses are in `assets/licenses/`. Generated planet meshes go to `assets/generated/` and are not committed. Render WGSL comes from `blade_render::shader_dir()` (packaged in `blade-render`; see [blade#391](https://github.com/kvark/blade/pull/391)) — not vendored under `assets/`.

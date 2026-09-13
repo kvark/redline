@@ -118,7 +118,8 @@ impl Game {
         let mut engine = blade_engine::Engine::new(
             blade_engine::Presentation::Window(&window),
             &blade_engine::config::Engine {
-                shader_path: assets.join("shaders").to_string_lossy().into_owned(),
+                // WGSL sources ship inside blade-render (blade#391); no vendored assets/shaders.
+                shader_path: blade_render::shader_dir().to_string_lossy().into_owned(),
                 data_path: assets.to_string_lossy().into_owned(),
                 cache_path: "asset-cache".to_string(),
                 time_step: 0.01,

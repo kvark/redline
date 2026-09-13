@@ -83,6 +83,10 @@ fn main() {
 fn mount_embedded_assets() {
     use include_dir::{Dir, include_dir};
     static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
+    // Blade WGSL packaged in blade-render (blade#391). Embed at compile time and
+    // mount under the same absolute paths `blade_render::shader_dir()` returns,
+    // since WASM has no filesystem access to the crate checkout.
+    static BLADE_SHADERS: Dir = include_dir!("$REDLINE_BLADE_SHADER_DIR");
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
     fn walk(dir: &Dir, root: &std::path::Path) {
         for file in dir.files() {
@@ -93,4 +97,5 @@ fn mount_embedded_assets() {
         }
     }
     walk(&ASSETS, &root);
+    walk(&BLADE_SHADERS, &blade_render::shader_dir());
 }
