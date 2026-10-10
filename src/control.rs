@@ -79,9 +79,54 @@ pub fn signed_heading_error(forward: glam::Vec3, desired: glam::Vec3, up: glam::
         .atan2(desired.dot(forward).clamp(-1.0, 1.0))
 }
 
+/// Global race shortcut, evaluated before egui can consume a focused key.
+/// A held key must not repeatedly alternate between paused and running.
+pub fn pause_key_intent(
+    key: winit::keyboard::KeyCode,
+    state: winit::event::ElementState,
+    repeat: bool,
+) -> bool {
+    key == winit::keyboard::KeyCode::KeyP && state == winit::event::ElementState::Pressed && !repeat
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pause_only_toggles_on_a_fresh_p_press() {
+        use winit::{event::ElementState, keyboard::KeyCode};
+        assert!(pause_key_intent(
+            KeyCode::KeyP,
+            ElementState::Pressed,
+            false
+        ));
+        assert!(!pause_key_intent(
+            KeyCode::KeyP,
+            ElementState::Pressed,
+            true
+        ));
+        assert!(!pause_key_intent(
+            KeyCode::KeyP,
+            ElementState::Released,
+            false
+        ));
+        assert!(!pause_key_intent(
+            KeyCode::KeyW,
+            ElementState::Pressed,
+            false
+        ));
+        let mut paused = false;
+        for repeat in [false, true, true, false] {
+            if pause_key_intent(KeyCode::KeyP, ElementState::Pressed, repeat) {
+                paused = !paused;
+            }
+        }
+        assert!(
+            !paused,
+            "a second fresh press resumes without repeat toggles"
+        );
+    }
 
     #[test]
     fn steering_self_centers_without_a_renderer() {

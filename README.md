@@ -75,6 +75,12 @@ python3 -m http.server --directory dist
 
 Pushes to `main` build the WASM target and deploy it to GitHub Pages.
 
-Controls: `W/↑` throttle, `S/↓` brake, `A/D` steer, `R` respawn, `Space` jump, `,/.` roll, `Esc` opens the menu while racing (quit from the menu on native).
+Controls: `W/↑` throttle, `S/↓` brake, `A/D` steer, `R` respawn, `Space` jump, `,/.` roll, `P` pause/resume, `Esc` opens the menu while racing (quit from the menu on native).
+
+The heading-up HUD map shows the cyan ribbon and its racing direction, your white
+craft marker, and the next required gate in yellow. Gates outside the local map
+stay visible as a border arrow; the bearing label also identifies missed gates
+behind you. An orange marker points back to the ribbon when off course. Guidance
+is visual only; steering and throttle remain entirely manual.
 
 Kenney models are CC0; licenses are in `assets/licenses/`. Generated planet meshes go to `assets/generated/` and are not committed. Render WGSL comes from `blade_render::shader_dir()` (packaged in `blade-render`; see [blade#391](https://github.com/kvark/blade/pull/391)) — not vendored under `assets/`.

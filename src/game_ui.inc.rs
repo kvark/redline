@@ -25,6 +25,25 @@ impl Game {
             }
         }
 
+        // Pause is global during a race, including when an egui widget has focus.
+        if let winit::event::WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(key),
+                    state,
+                    repeat,
+                    ..
+                },
+            ..
+        } = *event
+            && !self.in_menu
+            && control::pause_key_intent(key, state, repeat)
+        {
+            self.toggle_pause();
+            self.window.request_redraw();
+            return Ok(winit::event_loop::ControlFlow::Poll);
+        }
+
         // Enter rematch from the results board (keep craft + circuit).
         if let winit::event::WindowEvent::KeyboardInput {
             event:
@@ -166,6 +185,12 @@ impl Game {
         Ok(winit::event_loop::ControlFlow::Poll)
     }
 
+    fn toggle_pause(&mut self) {
+        self.is_paused = !self.is_paused;
+        // Never include paused wall time in the next fixed-step update.
+        self.last_physics_update = time::Instant::now();
+    }
+
     fn respawn(&mut self) {
         self.vehicle.teleport(&mut self.engine, &self.spawn);
         self.race.reset();
@@ -210,7 +235,9 @@ impl Game {
                     egui::Color32::from_rgba_premultiplied(fill[0], fill[1], fill[2], fill[3]);
                 egui::Panel::right("hud")
                     .frame(frame)
-                    .show_inside(egui_ctx, |ui| self.populate_hud(ui));
+                    .show_inside(egui_ctx, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| self.populate_hud(ui));
+                    });
                 self.populate_countdown(egui_ctx);
                 self.populate_lap_callout(egui_ctx);
                 self.populate_results(egui_ctx);
@@ -470,7 +497,13 @@ impl Game {
     }
 
     fn populate_hud(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Redline");
+        ui.horizontal(|ui| {
+            ui.heading("Redline");
+            let label = if self.is_paused { "Resume [P]" } else { "Pause [P]" };
+            if ui.button(label).clicked() {
+                self.toggle_pause();
+            }
+        });
         ui.label(format!(
             "{} on {}",
             self.menu_vehicle.label(),
@@ -537,6 +570,8 @@ impl Game {
                 format!("Off course  {off:.1}m"),
             );
         }
+        ui.separator();
+        crate::route_map::show(ui, &pose, &self.planet, &self.race, &query);
         if self.countdown_locks_drive() {
             ui.colored_label(
                 egui::Color32::from_rgb(255, 220, 90),
@@ -546,7 +581,7 @@ impl Game {
         ui.separator();
         ui.label("W/↑ throttle   S/↓ brake   A/D steer");
         ui.label("R respawn   Space jump   ,/. roll");
-        ui.label("Esc menu");
+        ui.label("P pause/resume   Esc menu");
 
         egui::CollapsingHeader::new("Camera")
             .default_open(false)
@@ -563,7 +598,6 @@ impl Game {
                     egui::Slider::new(&mut self.cam_config.altitude, -0.15..=1.1).text("Altitude"),
                 );
                 ui.add(egui::Slider::new(&mut self.cam_config.fov, 0.6..=1.6).text("FOV"));
-                ui.toggle_value(&mut self.is_paused, "Pause");
             });
 
         ui.horizontal(|ui| {
