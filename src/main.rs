@@ -27,6 +27,7 @@ mod menu;
 mod planet;
 mod race;
 mod results;
+mod route_map;
 mod trace;
 mod vehicle;
 
