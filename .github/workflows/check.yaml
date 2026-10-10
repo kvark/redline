@@ -55,6 +55,13 @@ jobs:
         with:
           lfs: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Test web startup
+        run: node --experimental-vm-modules --test web/boot.test.mjs
+
       - name: Setup Rust
         run: |
           rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown

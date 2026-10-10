@@ -28,15 +28,39 @@
         place-items: center;
         pointer-events: none;
         letter-spacing: 0.08em;
+        padding: 2rem;
+        box-sizing: border-box;
+        text-align: center;
+        white-space: pre-wrap;
       }
     </style>
   </head>
   <body>
-    <div id="boot">Loading Redline…</div>
+    <div id="boot" role="status">Loading Redline…</div>
     <script type="module">
-      import init from "./pkg/redline.js";
       const boot = document.getElementById("boot");
       try {
+        // Check before downloading the game: a blocked WebGL context otherwise
+        // fails inside the asynchronously started Rust event loop.
+        let gl;
+        try {
+          gl = document.createElement("canvas").getContext("webgl2", {
+            antialias: false,
+          });
+        } catch {
+          // Browsers may throw instead of returning null when WebGL is blocked.
+        }
+        if (!gl) {
+          throw new Error(
+            "WebGL 2 is unavailable. Enable hardware acceleration in your browser, " +
+              "or try another browser or device.",
+          );
+        }
+        // The game creates its own canvas; release this temporary context.
+        gl.getExtension("WEBGL_lose_context")?.loseContext();
+
+        // A static import fails before this try/catch can show a loading error.
+        const { default: init } = await import("./pkg/redline.js");
         await init();
         boot?.remove();
       } catch (err) {
@@ -50,10 +74,12 @@
           boot?.remove();
         } else {
           if (boot) {
-            boot.textContent = String(err);
+            boot.setAttribute("role", "alert");
+            boot.textContent =
+              "Redline couldn't start.\n\n" +
+              (msg || String(err)) +
+              "\n\nReload the page to try again.";
             boot.style.pointerEvents = "auto";
-            boot.style.padding = "2rem";
-            boot.style.whiteSpace = "pre-wrap";
           }
           throw err;
         }
