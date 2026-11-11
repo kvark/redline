@@ -27,12 +27,18 @@ pub struct Race {
     sector_start: f32,
 }
 
+/// Track sample index of every gate (gate 0 is the start/finish line).
+pub fn checkpoint_samples(track_len: usize, checkpoint_count: u32) -> Vec<usize> {
+    let count = checkpoint_count.max(4) as usize;
+    let stride = (track_len / count).max(1);
+    (0..count).map(|i| (i * stride) % track_len).collect()
+}
+
 impl Race {
     pub fn new(track: &[planet::TrackSample], config: config::Race) -> Self {
-        let count = config.checkpoint_count.max(4) as usize;
-        let stride = (track.len() / count).max(1);
-        let checkpoints = (0..count)
-            .map(|i| track[(i * stride) % track.len()].position)
+        let checkpoints = checkpoint_samples(track.len(), config.checkpoint_count)
+            .into_iter()
+            .map(|i| track[i].position)
             .collect();
         Self {
             laps_to_win: config.laps,
