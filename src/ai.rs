@@ -1,4 +1,4 @@
-use crate::{config, control, planet, race, vehicle};
+use crate::{boost_pad, config, control, planet, race, vehicle};
 
 pub struct Driver {
     pub vehicle: vehicle::Vehicle,
@@ -43,6 +43,7 @@ impl Driver {
         engine: &mut blade_engine::Engine,
         track: &[planet::TrackSample],
         track_width: f32,
+        pads: &[boost_pad::Pad],
         gravity: f32,
         dt: f32,
     ) {
@@ -97,7 +98,8 @@ impl Driver {
         let cruise_speed = self.target_speed * turn_slowdown * lane_slowdown;
         let target_speed = if self.vehicle.is_recoiling() {
             self.target_speed * 0.35
-        } else if speed > self.target_speed * 1.12 {
+        } else if speed > self.target_speed * (1.12 + self.vehicle.speed_bonus()) {
+            // Coast above cruise, but let a live boost carry its extra pace.
             0.0
         } else {
             cruise_speed
@@ -107,6 +109,7 @@ impl Driver {
             target_speed,
             self.steering * steering_limit,
             off_track,
+            pads,
             dt,
         );
         self.vehicle.apply_gravity(engine, gravity, dt);

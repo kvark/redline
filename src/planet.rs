@@ -201,6 +201,12 @@ fn sample_track_surface(dirs: &[glam::Vec3], config: config::Planet) -> Vec<Trac
     samples
 }
 
+/// Terrain radius along `dir`, matching the generated planet mesh vertices.
+/// `track` is the ribbon centerline as unit directions (sample normals).
+pub fn surface_height(dir: glam::Vec3, config: config::Planet, track: &[glam::Vec3]) -> f32 {
+    sample_height(dir, config, track).0
+}
+
 fn sample_height(dir: glam::Vec3, config: config::Planet, track: &[glam::Vec3]) -> (f32, f32) {
     let continental = fbm(dir * 1.65 + seed_offset(config.seed), 5);
     let broad = fbm(dir * 1.10 + seed_offset(config.seed ^ 0x7137_1A11), 3);

@@ -55,6 +55,14 @@ Scripts: `accel` (straight throttle), `steer` (hold left), `offroad` (leave the 
 
 Physics uses a fixed 10 ms step with catch-up so lavapipe, a real GPU, and WebGL2 share the same controls/joints regardless of frame time. Scripted runs catch up aggressively so a full lap finishes in seconds of wall time under software raster.
 
+Boost pads: each timed sector after the launch has a glowing chevron strip on
+the straightest part of the ribbon. Rolling onto one fires a short forward thrust
+through the chassis rigid body (with a cooldown), stacking with the
+scrub→rejoin boost under a shared cap. Player, AI, and scripted drives all use
+it. The chase camera widens its FOV with speed and boost, speed lines streak
+past while boosting, and the HUD flashes `» BOOST «`. Script runs log
+`pad_hits=<player>/<pads>` and the trace summary counts `pad_hits`.
+
 On the web build, the same scripts are available via query string, e.g. `?script=lap&seconds=45` or `?script=race&seconds=120`.
 
 ## Web / WASM

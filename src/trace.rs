@@ -99,6 +99,8 @@ pub struct Sample {
     pub recovered: u8,
     /// Intensity of ribbon re-acquire boost applied this sample (0..1).
     pub ribbon_boost: f32,
+    /// Intensity of boost-pad thrust applied this sample (0..1).
+    pub pad_boost: f32,
 }
 
 pub struct Recorder {
@@ -122,11 +124,11 @@ impl Recorder {
 
     pub fn finish(&self) {
         let mut body = String::from(
-            "t,throttle,steer,px,py,pz,speed,fwd,lat,yaw,upright,off,head,progress,cp,lap,recovered,boost\n",
+            "t,throttle,steer,px,py,pz,speed,fwd,lat,yaw,upright,off,head,progress,cp,lap,recovered,boost,pad\n",
         );
         for row in self.rows.iter() {
             body.push_str(&format!(
-                "{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{},{},{},{:.3}\n",
+                "{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{},{},{},{:.3},{:.3}\n",
                 row.t,
                 row.throttle,
                 row.steer,
@@ -145,6 +147,7 @@ impl Recorder {
                 row.lap,
                 row.recovered,
                 row.ribbon_boost,
+                row.pad_boost,
             ));
         }
         if let Some(parent) = self.path.parent() {
@@ -191,8 +194,13 @@ fn log_summary(script: Script, rows: &[Sample]) {
     let travelled = start.distance(end);
     let boost_peaks = rows.iter().filter(|r| r.ribbon_boost > 0.85).count();
     let max_boost = rows.iter().map(|r| r.ribbon_boost).fold(0.0f32, f32::max);
+    let pad_samples = rows.iter().filter(|r| r.pad_boost > 0.0).count();
+    let pad_hits = rows
+        .windows(2)
+        .filter(|pair| pair[1].pad_boost > 0.999 && pair[0].pad_boost < pair[1].pad_boost)
+        .count();
     log::info!(
-        "trace {} n={} t={:.1}s travelled={:.1} max_speed={:.1} mean_speed={:.1} mean_|lat|={:.2} max_off={:.1} first_off={} min_upright={:.2} recoveries={} stuck_samples={} yaw_flips={} progress={:.2} cp={} lap={} ribbon_boost_peaks={} max_boost={:.2}",
+        "trace {} n={} t={:.1}s travelled={:.1} max_speed={:.1} mean_speed={:.1} mean_|lat|={:.2} max_off={:.1} first_off={} min_upright={:.2} recoveries={} stuck_samples={} yaw_flips={} progress={:.2} cp={} lap={} ribbon_boost_peaks={} max_boost={:.2} pad_hits={} pad_boost_samples={}",
         script.as_str(),
         rows.len(),
         rows.last().unwrap().t,
@@ -213,6 +221,8 @@ fn log_summary(script: Script, rows: &[Sample]) {
         max_lap,
         boost_peaks,
         max_boost,
+        pad_hits,
+        pad_samples,
     );
 }
 
