@@ -178,6 +178,7 @@ impl Game {
                             .map(|driver| driver.vehicle.pad_hits())
                             .collect::<Vec<_>>()
                     );
+                    log::info!("{}", self.race_stats_summary());
                     return Err(QuitEvent);
                 }
                 return Ok(if let Some(when) = time::Instant::now().checked_add(wait) {
