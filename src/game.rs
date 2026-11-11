@@ -17,6 +17,7 @@ use crate::config;
 use crate::control;
 use crate::countdown;
 use crate::lap_callout;
+use crate::launch;
 use crate::menu;
 use crate::planet;
 use crate::race;
@@ -24,6 +25,7 @@ use crate::race_stats;
 use crate::racecraft;
 use crate::results;
 use crate::speed_fx;
+use crate::split;
 use crate::trace;
 use crate::vehicle;
 use crate::vehicle::Isometry;
@@ -80,6 +82,14 @@ pub struct Game {
     lap_callout: Option<lap_callout::LapCallout>,
     /// Post-FINISH placement board; skipped for scripts/smoke.
     race_results: Option<results::RaceResults>,
+    /// Board captured at the line, shown once the FINISH banner clears.
+    pending_results: Option<results::RaceResults>,
+    /// Grid launch ratings and pushes; None when the race had no lights.
+    launch: Option<launch::Start>,
+    /// Live time gaps for the leader split and the results classification.
+    gap_timer: split::GapTimer,
+    /// Races started this session; varies AI launches between rematches.
+    race_seed: u32,
 }
 
 pub struct QuitEvent;
@@ -233,6 +243,7 @@ impl Game {
         );
 
         let spacing = track_spacing(&planet.track);
+        let ai_count = ai_drivers.len();
         let egui_context = egui::Context::default();
         let egui_viewport_id = egui_context.viewport_id();
         let egui_state =
@@ -281,9 +292,15 @@ impl Game {
             sim_time: 0.0,
             physics_accum: 0.0,
             recovered_this_step: 0,
-            start_countdown: None,
+            start_countdown: wants_lights(cli.script, cli.smoke_frames)
+                .then(countdown::StartCountdown::new),
             lap_callout: None,
             race_results: None,
+            pending_results: None,
+            launch: wants_lights(cli.script, cli.smoke_frames)
+                .then(|| launch::Start::new(ai_count, 0)),
+            gap_timer: split::GapTimer::default(),
+            race_seed: 0,
         }
     }
 
@@ -350,12 +367,12 @@ impl Game {
         self.controller = control::PlayerController::default();
         self.lap_callout = None;
         self.race_results = None;
-        // Scripts / smoke skip the lights so automation stays fast.
-        self.start_countdown = if self.script.is_none() && self.smoke_frames_left.is_none() {
-            Some(countdown::StartCountdown::new())
-        } else {
-            None
-        };
+        self.pending_results = None;
+        self.gap_timer.reset();
+        self.race_seed = self.race_seed.wrapping_add(1);
+        let lights = wants_lights(self.script, self.smoke_frames_left);
+        self.start_countdown = lights.then(countdown::StartCountdown::new);
+        self.launch = lights.then(|| launch::Start::new(self.ai_drivers.len(), self.race_seed));
         self.window.set_title(&format!(
             "Redline — {} / {}",
             self.menu_vehicle.label(),
@@ -411,6 +428,15 @@ impl Game {
         if countdown_done {
             self.start_countdown = None;
         }
+        if let (Some(lights), Some(start)) = (self.start_countdown.as_ref(), self.launch.as_mut()) {
+            let t = lights.since_go();
+            // The scripted driver squeezes the throttle just before GO.
+            let held = match self.script {
+                Some(_) => t >= -launch::SCRIPT_LEAD,
+                None => self.throttle_forward,
+            };
+            start.observe(t, held);
+        }
         let drive_locked = self
             .start_countdown
             .as_ref()
@@ -459,6 +485,7 @@ impl Game {
                     self.race_stats.record_recovery(true);
                 }
             }
+            self.apply_launch(dt);
         }
         self.engine.update(dt);
         self.apply_vehicle_bumps();
@@ -483,7 +510,7 @@ impl Game {
             if self.recovered_this_step != 0 {
                 self.race_stats.record_recovery(false);
             }
-            self.observe_race_stats();
+            self.observe_race_stats(dt);
         }
         if self
             .lap_callout
@@ -497,7 +524,10 @@ impl Game {
             self.lap_callout = None;
             // Scripts/smoke must not block on the results board.
             if was_finish && self.script.is_none() && self.smoke_frames_left.is_none() {
-                self.race_results = Some(self.capture_results());
+                self.race_results = self
+                    .pending_results
+                    .take()
+                    .or_else(|| Some(self.capture_results()));
             }
         }
         if self
@@ -509,7 +539,69 @@ impl Game {
             self.open_menu();
         }
         self.emit_dust(&pose, dt);
-        self.record_sample(&pose, linear, angular, forward_speed, lateral_speed);
+        if !drive_locked {
+            self.record_sample(&pose, linear, angular, forward_speed, lateral_speed);
+        }
+    }
+
+    /// Launch thrust (or jump-start wheelspin drag) along each craft's heading.
+    fn apply_launch(&mut self, dt: f32) {
+        let Some(start) = self.launch.as_mut() else {
+            return;
+        };
+        let (lin, _) = self.engine.get_velocity(self.vehicle.body_handle);
+        let accels = start.tick(dt, glam::Vec3::from(lin).length());
+        for (id, accel) in accels.into_iter().enumerate() {
+            if accel == 0.0 || id > self.ai_drivers.len() {
+                continue;
+            }
+            let vehicle = if id == 0 {
+                &self.vehicle
+            } else {
+                &self.ai_drivers[id - 1].vehicle
+            };
+            let pose = vehicle.pose(&self.engine);
+            let up = pose.position.normalize_or_zero();
+            let forward = (pose.orientation * glam::Vec3::Z)
+                .reject_from(up)
+                .normalize_or_zero();
+            let (lin, _) = self.engine.get_velocity(vehicle.body_handle);
+            // Wheelspin only robs speed the craft has; it never pushes backwards.
+            if accel < 0.0 && glam::Vec3::from(lin).dot(forward) < 0.5 {
+                continue;
+            }
+            let (handle, mass) = (vehicle.body_handle, vehicle.body_mass);
+            self.engine
+                .apply_linear_impulse(handle, (forward * mass * accel * dt.min(0.05)).into());
+        }
+    }
+
+    /// Launch thrust left on the player's craft, 0..1 (camera / HUD FX).
+    fn launch_thrust(&self) -> f32 {
+        self.launch.as_ref().map_or(0.0, |s| s.player_thrust())
+    }
+
+    /// One-line launch summary for the end-of-race log.
+    pub(crate) fn launch_summary(&self) -> String {
+        let Some(start) = self.launch.as_ref() else {
+            return "Launch: no start lights".to_string();
+        };
+        let secs = |v: Option<f32>| v.map_or("-".to_string(), |t| format!("{t:+.2}s"));
+        let name = |r: &Option<launch::Rating>| r.map_or("-", |r| r.label());
+        let ai: Vec<_> = start.ratings[1..].iter().map(name).collect();
+        let margin = self.pending_results.as_ref().and_then(|b| b.margin());
+        format!(
+            "Launch: player={} hold={} est_gain={} ai=[{}] split_at_finish={}",
+            name(&start.ratings[0]),
+            secs(start.player_start),
+            secs(start.player_gain),
+            ai.join(", "),
+            margin.map_or("-".to_string(), |m| format!(
+                "{} {}",
+                m.text(),
+                m.reference()
+            )),
+        )
     }
 
     fn on_race_event(&mut self, event: race::RaceEvent) {
@@ -517,6 +609,8 @@ impl Game {
         match event {
             race::RaceEvent::Finished { .. } => {
                 self.lap_callout = Some(lap_callout::LapCallout::finish());
+                // Classify at the line, before the field drives on.
+                self.pending_results = Some(self.capture_results());
             }
             race::RaceEvent::LapComplete {
                 lap_time,
@@ -739,7 +833,7 @@ impl Game {
         }
     }
 
-    fn observe_race_stats(&mut self) {
+    fn observe_race_stats(&mut self, dt: f32) {
         let track = &self.planet.track;
         let width = self.planet.track_width;
         let entry = |vehicle: &vehicle::Vehicle, is_ai: bool| {
@@ -755,6 +849,7 @@ impl Game {
             .collect();
         self.race_stats
             .observe(&entries, track.len(), self.track_spacing);
+        self.gap_timer.observe(self.race_stats.distances(), dt);
     }
 
     /// One-line pack summary for the end-of-race log.
@@ -855,6 +950,14 @@ impl Game {
             self.race.best_lap,
             self.race.last_lap_time,
         )
+        .with_field(
+            self.launch.as_ref().and_then(|s| s.ratings[0]),
+            self.gap_timer
+                .standings()
+                .into_iter()
+                .map(|(racer, gap)| results::Standing { racer, gap })
+                .collect(),
+        )
     }
 
     pub(crate) fn script_finished(&self) -> bool {
@@ -866,6 +969,12 @@ impl Game {
         let race_done = matches!(self.script, Some(trace::Script::Race)) && self.race.finished;
         timed_out || lap_done || race_done
     }
+}
+
+/// Start lights run for play and for the scripted race (which practises its
+/// launch); smoke and single-lap scripts skip them to stay fast.
+fn wants_lights(script: Option<trace::Script>, smoke: Option<u32>) -> bool {
+    smoke.is_none() && script.is_none_or(|s| s == trace::Script::Race)
 }
 
 struct Cli {
