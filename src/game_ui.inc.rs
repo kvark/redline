@@ -164,12 +164,19 @@ impl Game {
                 }
                 if self.script_finished() {
                     log::info!(
-                        "Drive script finished sim={:.1}s lap={} cp={} race_time={:.1} last_lap={:?}",
+                        "Drive script finished sim={:.1}s lap={} cp={} race_time={:.1} last_lap={:?} best_lap={:?} pad_hits={}/{} ai_pad_hits={:?}",
                         self.sim_time,
                         self.race.lap,
                         self.race.next_checkpoint,
                         self.race.time,
-                        self.race.last_lap_time
+                        self.race.last_lap_time,
+                        self.race.best_lap,
+                        self.vehicle.pad_hits(),
+                        self.boost_pads.len(),
+                        self.ai_drivers
+                            .iter()
+                            .map(|driver| driver.vehicle.pad_hits())
+                            .collect::<Vec<_>>()
                     );
                     return Err(QuitEvent);
                 }
@@ -193,6 +200,7 @@ impl Game {
 
     fn respawn(&mut self) {
         self.vehicle.teleport(&mut self.engine, &self.spawn);
+        self.vehicle.reset_boost_stats();
         self.race.reset();
         self.lap_callout = None;
         self.race_results = None;
@@ -241,6 +249,9 @@ impl Game {
                 self.populate_countdown(egui_ctx);
                 self.populate_lap_callout(egui_ctx);
                 self.populate_results(egui_ctx);
+                // Explicit layers: lines on Background, BOOST on Foreground.
+                self.populate_speed_lines(egui_ctx);
+                self.populate_boost_indicator(egui_ctx);
             }
         });
 
@@ -274,6 +285,70 @@ impl Game {
         egui_output.viewport_output[&self.egui_viewport_id].repaint_delay
     }
 
+
+    fn populate_speed_lines(&self, ui: &egui::Ui) {
+        let (lin, _) = self.engine.get_velocity(self.vehicle.body_handle);
+        let speed = glam::Vec3::from(lin).length();
+        let intensity = speed_fx::line_intensity(speed, self.vehicle.boost_intensity());
+        let streaks = speed_fx::streaks(intensity, self.sim_time);
+        if streaks.is_empty() {
+            return;
+        }
+        let ctx = ui.ctx();
+        // Behind every HUD area; egui still composites over the 3D frame.
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("speed_lines"),
+        ));
+        let rect = ctx.content_rect();
+        // Focus a little above center: the chase camera looks over the craft.
+        let focus = egui::pos2(rect.center().x, rect.top() + rect.height() * 0.46);
+        let reach = (rect.width().powi(2) + rect.height().powi(2)).sqrt() * 0.5;
+        for streak in streaks {
+            let dir = egui::vec2(streak.angle.cos(), streak.angle.sin());
+            let a = focus + dir * (streak.inner * reach);
+            let b = focus + dir * (streak.outer * reach);
+            let alpha = (streak.alpha * 255.0) as u8;
+            painter.line_segment(
+                [a, b],
+                egui::Stroke::new(
+                    1.0 + 1.5 * intensity,
+                    egui::Color32::from_rgba_unmultiplied(190, 240, 255, alpha),
+                ),
+            );
+        }
+    }
+
+    fn populate_boost_indicator(&self, ui: &egui::Ui) {
+        let pad = self.vehicle.pad_boost_intensity();
+        let rejoin = self.vehicle.ribbon_boost_intensity();
+        let level = pad.max(rejoin);
+        if level <= 0.01 {
+            return;
+        }
+        let alpha = (170.0 + 85.0 * level) as u8;
+        let color = if pad >= rejoin {
+            egui::Color32::from_rgba_unmultiplied(90, 230, 255, alpha)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(255, 170, 70, alpha)
+        };
+        egui::Area::new(egui::Id::new("boost_indicator"))
+            // Upper third: over the sky, clear of the dust and lap banners.
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 64.0))
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .show(ui.ctx(), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new("» BOOST «")
+                            .size(30.0 + 10.0 * level)
+                            .strong()
+                            .color(color),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Extend),
+                );
+            });
+    }
 
     fn countdown_locks_drive(&self) -> bool {
         self.start_countdown
@@ -622,6 +697,16 @@ impl Game {
 
         let dt = self.last_camera_update.elapsed().as_secs_f32();
         self.last_camera_update = time::Instant::now();
+        let (lin, _) = self.engine.get_velocity(self.vehicle.body_handle);
+        let kick_target = if self.is_paused {
+            self.fov_kick
+        } else {
+            speed_fx::fov_kick_target(
+                glam::Vec3::from(lin).length(),
+                self.vehicle.boost_intensity(),
+            )
+        };
+        self.fov_kick = speed_fx::ease_kick(self.fov_kick, kick_target, dt.min(0.1));
         let t = 1.0 - (-dt * self.cam_config.speed).exp();
         let smooth = self.last_camera_orient.slerp(desired, t.clamp(0.0, 1.0));
         self.last_camera_orient = smooth;
@@ -686,7 +771,7 @@ impl Game {
                 position: trans.into(),
                 orientation: rot.into(),
             },
-            fov_y: cc.fov,
+            fov_y: cc.fov + self.fov_kick,
         }
     }
 }

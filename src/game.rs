@@ -12,6 +12,7 @@ use std::time;
 use web_time as time;
 
 use crate::ai;
+use crate::boost_pad;
 use crate::config;
 use crate::control;
 use crate::countdown;
@@ -20,6 +21,7 @@ use crate::menu;
 use crate::planet;
 use crate::race;
 use crate::results;
+use crate::speed_fx;
 use crate::trace;
 use crate::vehicle;
 use crate::vehicle::Isometry;
@@ -40,6 +42,10 @@ pub struct Game {
     planet: planet::GeneratedPlanet,
     planet_cfg: config::Planet,
     race: race::Race,
+    /// Ribbon boost pads for the active circuit (one strip per timed sector).
+    boost_pads: Vec<boost_pad::Pad>,
+    /// Eased chase-camera FOV kick (radians) from speed + boost.
+    fov_kick: f32,
     spawn: Isometry,
     world_handles: Vec<blade_engine::ObjectHandle>,
     in_menu: bool,
@@ -175,7 +181,7 @@ impl Game {
         engine.create_environment_map("mars-sky", sky_w, sky_h, &starfield(sky_w, sky_h));
 
         let active_map = menu::MapId::MarsClassic;
-        let (planet, planet_cfg, world_handles, spawn, race) =
+        let (planet, planet_cfg, world_handles, spawn, race, boost_pads) =
             populate_world(&mut engine, &assets, active_map);
 
         let veh_config: config::Vehicle =
@@ -241,6 +247,8 @@ impl Game {
             planet,
             planet_cfg,
             race,
+            boost_pads,
+            fov_kick: 0.0,
             spawn,
             world_handles,
             in_menu,
@@ -275,8 +283,9 @@ impl Game {
             self.engine.remove_object(handle);
         }
         let assets = assets_dir();
-        let (planet, planet_cfg, world_handles, spawn, race) =
+        let (planet, planet_cfg, world_handles, spawn, race, boost_pads) =
             populate_world(&mut self.engine, &assets, map);
+        self.boost_pads = boost_pads;
         self.planet = planet;
         self.planet_cfg = planet_cfg;
         self.world_handles = world_handles;
@@ -319,6 +328,7 @@ impl Game {
                 spawn_ai_drivers(&mut self.engine, &self.veh_config, &self.planet.track);
         }
         self.race.reset();
+        self.fov_kick = 0.0;
         self.last_camera_orient = self.spawn.orientation;
         self.in_menu = false;
         self.is_paused = false;
@@ -398,12 +408,14 @@ impl Game {
             // Hold on the grid: gravity/stability still settle the craft, but
             // player + AI drive stay frozen until GO.
             // Grid is on-ribbon; pass 0 so grip bonus applies without arming boost.
-            self.vehicle.drive(&mut self.engine, 0.0, 0.0, 0.0, dt);
+            self.vehicle.drive(&mut self.engine, 0.0, 0.0, 0.0, &[], dt);
             self.vehicle
                 .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
             self.vehicle.apply_stability(&mut self.engine, dt);
             for driver in self.ai_drivers.iter_mut() {
-                driver.vehicle.drive(&mut self.engine, 0.0, 0.0, 0.0, dt);
+                driver
+                    .vehicle
+                    .drive(&mut self.engine, 0.0, 0.0, 0.0, &[], dt);
                 driver
                     .vehicle
                     .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
@@ -419,6 +431,7 @@ impl Game {
                     &mut self.engine,
                     &self.planet.track,
                     self.planet.track_width,
+                    &self.boost_pads,
                     self.planet_cfg.gravity,
                     dt,
                 );
@@ -552,6 +565,7 @@ impl Game {
             command.target_speed,
             command.steering_angle,
             off_track,
+            &self.boost_pads,
             dt,
         );
     }
@@ -565,6 +579,7 @@ impl Game {
         lateral_speed: f32,
     ) {
         let ribbon_boost = self.vehicle.ribbon_boost_intensity();
+        let pad_boost = self.vehicle.pad_boost_intensity();
         let Some(recorder) = self.recorder.as_mut() else {
             return;
         };
@@ -593,6 +608,7 @@ impl Game {
             lap: self.race.lap,
             recovered: self.recovered_this_step,
             ribbon_boost,
+            pad_boost,
         });
     }
 
@@ -999,6 +1015,7 @@ fn populate_world(
     Vec<blade_engine::ObjectHandle>,
     Isometry,
     race::Race,
+    Vec<boost_pad::Pad>,
 ) {
     let planet_cfg = map.planet();
     let generated = assets.join("generated");
@@ -1081,14 +1098,48 @@ fn populate_world(
     }
 
     world_handles.extend(spawn_props(engine, &planet));
+    let race_cfg = config::Race::default();
+    let boost_pads = boost_pad::place(
+        &planet.track,
+        race_cfg.checkpoint_count as usize,
+        boost_pad::PADS_PER_SECTOR,
+        planet.track_width,
+    );
+    if let Some(model) = boost_pad::write_model(&generated, &boost_pads, planet_cfg, &planet.track)
+    {
+        let pads_object = blade_engine::config::Object {
+            name: "boost-pads".to_string(),
+            visuals: vec![blade_engine::config::Visual {
+                model: relative_model(assets, &model),
+                ..Default::default()
+            }],
+            // Visual only: the trigger is a footprint test, so no collider bumps.
+            colliders: Vec::new(),
+            additional_mass: None,
+        };
+        world_handles.push(engine.add_object(
+            &pads_object,
+            blade_engine::Transform::default(),
+            blade_engine::DynamicInput::Empty,
+        ));
+    }
+    log::info!(
+        "laid {} boost pads (sector@sample: {})",
+        boost_pads.len(),
+        boost_pads
+            .iter()
+            .map(|pad| format!("{}@{}", pad.sector, pad.sample))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     log::info!(
         "spawned colliders in {:.1}ms",
         objects_started.elapsed().as_secs_f32() * 1e3
     );
 
     let spawn = vehicle::Vehicle::spawn_pose(&planet.track, vehicle::SPAWN_HOVER);
-    let race = race::Race::new(&planet.track, config::Race::default());
-    (planet, planet_cfg, world_handles, spawn, race)
+    let race = race::Race::new(&planet.track, race_cfg);
+    (planet, planet_cfg, world_handles, spawn, race, boost_pads)
 }
 
 fn spawn_props(

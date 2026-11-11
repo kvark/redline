@@ -1,6 +1,6 @@
 use std::{f32::consts, mem, ops};
 
-use crate::{config, planet};
+use crate::{boost_pad, config, planet};
 
 pub const SPAWN_HOVER: f32 = 0.42;
 
@@ -34,6 +34,12 @@ pub struct Vehicle {
     ribbon_boost: f32,
     /// Intensity of ribbon boost applied on the last [`Self::drive`] call.
     last_ribbon_boost: f32,
+    /// Boost-pad trigger / thrust / cooldown state.
+    pad_boost: boost_pad::PadBoost,
+    /// Intensity of pad boost applied on the last [`Self::drive`] call.
+    last_pad_boost: f32,
+    /// Combined target-speed bonus fraction applied on the last drive call.
+    last_speed_bonus: f32,
 }
 
 /// Visual / stance / drive-feel override so crafts (and AI sharing a kit) differ.
@@ -196,6 +202,9 @@ pub fn spawn(
         was_off_ribbon: false,
         ribbon_boost: 0.0,
         last_ribbon_boost: 0.0,
+        pad_boost: boost_pad::PadBoost::default(),
+        last_pad_boost: 0.0,
+        last_speed_bonus: 0.0,
     };
     let wheel_config = blade_engine::config::Object {
         name: "vehicle/wheel".to_string(),
@@ -382,6 +391,7 @@ impl Vehicle {
         target_speed: f32,
         steering_angle: f32,
         off_track: f32,
+        pads: &[boost_pad::Pad],
         dt: f32,
     ) {
         let mut target_speed = target_speed;
@@ -397,12 +407,21 @@ impl Vehicle {
             dt,
         );
         self.last_ribbon_boost = boost;
-        if boost > 0.0 {
-            // Championship recovery: short shove + throttle bite after scrub→rejoin.
-            target_speed *= 1.0 + RIBBON_REACQUIRE_SPEED_BONUS * boost;
-        }
         engine.wake_up(self.body_handle);
         let pose = self.pose(engine);
+        let pad = self.pad_boost.tick(pads, pose.position, dt);
+        self.last_pad_boost = pad;
+        // Championship recovery (scrub→rejoin) and ribbon pads stack, capped.
+        let (speed_bonus, boost_accel) = boost_pad::combine(
+            boost,
+            pad,
+            RIBBON_REACQUIRE_SPEED_BONUS,
+            RIBBON_REACQUIRE_ACCEL,
+        );
+        self.last_speed_bonus = speed_bonus;
+        if target_speed > 0.0 {
+            target_speed *= 1.0 + speed_bonus;
+        }
         let up = pose.position.normalize_or_zero();
         let forward = (pose.orientation * glam::Vec3::Z).reject_from(up);
         let forward = forward.normalize_or_zero();
@@ -463,8 +482,9 @@ impl Vehicle {
                     (-lateral * self.body_mass * grip * step).into(),
                 );
             }
-            if boost > 0.0 {
-                let shove = forward * self.body_mass * RIBBON_REACQUIRE_ACCEL * boost * step;
+            if boost_accel > 0.0 {
+                // Thrust through the chassis rigid body: m·a·dt along heading.
+                let shove = forward * self.body_mass * boost_accel * step;
                 engine.apply_linear_impulse(self.body_handle, shove.into());
             }
         }
@@ -481,6 +501,29 @@ impl Vehicle {
 
     pub fn ribbon_boost_intensity(&self) -> f32 {
         self.last_ribbon_boost
+    }
+
+    pub fn pad_boost_intensity(&self) -> f32 {
+        self.last_pad_boost
+    }
+
+    /// Strongest live boost (pad or scrub→rejoin), for camera / HUD FX.
+    pub fn boost_intensity(&self) -> f32 {
+        self.last_pad_boost.max(self.last_ribbon_boost)
+    }
+
+    /// Target-speed bonus fraction applied on the last drive call.
+    pub fn speed_bonus(&self) -> f32 {
+        self.last_speed_bonus
+    }
+
+    pub fn pad_hits(&self) -> u32 {
+        self.pad_boost.hits()
+    }
+
+    /// Fresh race: clear pad thrust, cooldown and hit count.
+    pub fn reset_boost_stats(&mut self) {
+        self.pad_boost.reset();
     }
 
     pub fn apply_gravity(&self, engine: &mut blade_engine::Engine, gravity: f32, dt: f32) {
@@ -567,6 +610,9 @@ impl Vehicle {
         self.was_off_ribbon = false;
         self.ribbon_boost = 0.0;
         self.last_ribbon_boost = 0.0;
+        self.pad_boost.cancel();
+        self.last_pad_boost = 0.0;
+        self.last_speed_bonus = 0.0;
         let up = pose.position.normalize_or_zero();
         let fwd = (pose.orientation * glam::Vec3::Z).reject_from(up);
         if fwd.length_squared() > 1e-5 {

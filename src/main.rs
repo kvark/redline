@@ -17,6 +17,7 @@ compile_error!(
 );
 
 mod ai;
+mod boost_pad;
 mod config;
 mod control;
 mod countdown;
@@ -28,6 +29,7 @@ mod planet;
 mod race;
 mod results;
 mod route_map;
+mod speed_fx;
 mod trace;
 mod vehicle;
 
