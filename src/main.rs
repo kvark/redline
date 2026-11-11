@@ -24,6 +24,7 @@ mod countdown;
 mod game;
 mod glb;
 mod lap_callout;
+mod launch;
 mod menu;
 mod planet;
 mod race;
@@ -32,6 +33,7 @@ mod racecraft;
 mod results;
 mod route_map;
 mod speed_fx;
+mod split;
 mod trace;
 mod vehicle;
 

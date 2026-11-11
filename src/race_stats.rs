@@ -141,6 +141,11 @@ impl RaceStats {
         }
     }
 
+    /// Unwrapped race distance (m) per racer (0 = player).
+    pub fn distances(&self) -> &[f32] {
+        &self.progress
+    }
+
     /// Racer ids from leader to last.
     pub fn order(&self) -> Vec<usize> {
         let mut ids: Vec<usize> = (0..self.progress.len()).collect();

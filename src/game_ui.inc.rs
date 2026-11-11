@@ -179,6 +179,7 @@ impl Game {
                             .collect::<Vec<_>>()
                     );
                     log::info!("{}", self.race_stats_summary());
+                    log::info!("{}", self.launch_summary());
                     return Err(QuitEvent);
                 }
                 return Ok(if let Some(when) = time::Instant::now().checked_add(wait) {
@@ -248,6 +249,7 @@ impl Game {
                         egui::ScrollArea::vertical().show(ui, |ui| self.populate_hud(ui));
                     });
                 self.populate_countdown(egui_ctx);
+                self.populate_launch_banner(egui_ctx);
                 self.populate_lap_callout(egui_ctx);
                 self.populate_results(egui_ctx);
                 // Explicit layers: lines on Background, BOOST on Foreground.
@@ -290,7 +292,8 @@ impl Game {
     fn populate_speed_lines(&self, ui: &egui::Ui) {
         let (lin, _) = self.engine.get_velocity(self.vehicle.body_handle);
         let speed = glam::Vec3::from(lin).length();
-        let intensity = speed_fx::line_intensity(speed, self.vehicle.boost_intensity());
+        let boost = self.vehicle.boost_intensity().max(self.launch_thrust());
+        let intensity = speed_fx::line_intensity(speed, boost);
         let streaks = speed_fx::streaks(intensity, self.sim_time);
         if streaks.is_empty() {
             return;
@@ -321,7 +324,7 @@ impl Game {
     }
 
     fn populate_boost_indicator(&self, ui: &egui::Ui) {
-        let pad = self.vehicle.pad_boost_intensity();
+        let pad = self.vehicle.pad_boost_intensity().max(self.launch_thrust());
         let rejoin = self.vehicle.ribbon_boost_intensity();
         let level = pad.max(rejoin);
         if level <= 0.01 {
@@ -372,25 +375,52 @@ impl Game {
             egui::Color32::from_rgb(255, 220, 90)
         };
         egui::Area::new(egui::Id::new("start_countdown"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -48.0))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 140.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                ui.label(
-                    egui::RichText::new(label)
-                        .size(128.0)
-                        .strong()
-                        .color(color),
-                );
-                if !go {
+                ui.vertical_centered(|ui| {
+                    // Hint sits above the numeral, over the sky, clear of the craft.
+                    let hint = if go { " " } else { "Throttle on GO to launch · too early bogs" };
                     ui.label(
-                        egui::RichText::new("Hold…")
-                            .size(18.0)
-                            .color(egui::Color32::from_rgba_unmultiplied(220, 220, 220, 180)),
+                        egui::RichText::new(hint)
+                            .size(20.0)
+                            .strong()
+                            .color(egui::Color32::from_rgba_unmultiplied(240, 240, 240, 220)),
                     );
-                }
+                    ui.label(
+                        egui::RichText::new(label)
+                            .size(128.0)
+                            .strong()
+                            .color(color),
+                    );
+                });
             });
     }
 
+    fn populate_launch_banner(&self, ui: &egui::Ui) {
+        let Some(rating) = self.launch.as_ref().and_then(|s| s.banner()) else {
+            return;
+        };
+        let color = match rating {
+            launch::Rating::Perfect => egui::Color32::from_rgb(90, 230, 255),
+            launch::Rating::Good => egui::Color32::from_rgb(120, 255, 140),
+            launch::Rating::Jump => egui::Color32::from_rgb(255, 90, 90),
+            launch::Rating::Late => egui::Color32::from_rgb(220, 200, 160),
+        };
+        egui::Area::new(egui::Id::new("launch_banner"))
+            // Under the BOOST tag, clear of the craft and the GO numeral.
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 112.0))
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    egui::RichText::new(rating.label())
+                        .size(36.0)
+                        .strong()
+                        .color(color),
+                );
+            });
+    }
 
     fn populate_lap_callout(&self, ui: &egui::Ui) {
         let Some(banner) = self.lap_callout.as_ref() else {
@@ -460,6 +490,20 @@ impl Game {
         let race_time = board.race_time;
         let best_lap = board.best_lap;
         let last_lap = board.last_lap;
+        let launch = board.launch;
+        let margin = board.margin();
+        let rows: Vec<(String, String, bool)> = board
+            .standings
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                (
+                    format!("P{}  {}", i + 1, row.name()),
+                    row.gap_text(i + 1),
+                    row.racer == 0,
+                )
+            })
+            .collect();
         let mut rematch_clicked = false;
         let mut continue_clicked = false;
         egui::Area::new(egui::Id::new("race_results"))
@@ -495,6 +539,30 @@ impl Game {
                             }
                             if let Some(last) = last_lap {
                                 ui.label(format!("Last lap  {}", format_time(last)));
+                            }
+                            if let Some(m) = margin {
+                                ui.label(format!("{} {}", m.text(), m.reference()));
+                            }
+                            if let Some(rating) = launch {
+                                ui.label(format!("Launch  {}", rating.label()));
+                            }
+                            if !rows.is_empty() {
+                                ui.add_space(8.0);
+                                egui::Grid::new("standings").num_columns(2).spacing([28.0, 2.0]).show(
+                                    ui,
+                                    |ui| {
+                                        for row in &rows {
+                                            let color = if row.2 {
+                                                egui::Color32::from_rgb(120, 255, 140)
+                                            } else {
+                                                egui::Color32::from_rgb(220, 220, 220)
+                                            };
+                                            ui.colored_label(color, &row.0);
+                                            ui.colored_label(color, &row.1);
+                                            ui.end_row();
+                                        }
+                                    },
+                                );
                             }
                             ui.add_space(14.0);
                             ui.horizontal(|ui| {
@@ -596,6 +664,18 @@ impl Game {
                 .strong()
                 .color(egui::Color32::from_rgb(120, 255, 140)),
         );
+        if let Some(split) = self.gap_timer.split(0) {
+            let color = match split {
+                split::Split::Leading(_) => egui::Color32::from_rgb(120, 255, 140),
+                split::Split::Behind(_) => egui::Color32::from_rgb(255, 200, 90),
+            };
+            ui.label(
+                egui::RichText::new(format!("{}  {}", split.text(), split.reference()))
+                    .size(20.0)
+                    .strong()
+                    .color(color),
+            );
+        }
         ui.label(
             egui::RichText::new(format!(
                 "LAP {} / {}",
@@ -704,7 +784,7 @@ impl Game {
         } else {
             speed_fx::fov_kick_target(
                 glam::Vec3::from(lin).length(),
-                self.vehicle.boost_intensity(),
+                self.vehicle.boost_intensity().max(self.launch_thrust()),
             )
         };
         self.fov_kick = speed_fx::ease_kick(self.fov_kick, kick_target, dt.min(0.1));

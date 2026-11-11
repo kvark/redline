@@ -30,6 +30,11 @@ impl StartCountdown {
         self.elapsed < BEAT_SECS * 3.0
     }
 
+    /// Seconds from GO (negative while the 3-2-1 lights are still up).
+    pub fn since_go(&self) -> f32 {
+        self.elapsed - BEAT_SECS * 3.0
+    }
+
     /// Big HUD label, if still showing.
     pub fn label(&self) -> Option<&'static str> {
         if self.is_finished() {
