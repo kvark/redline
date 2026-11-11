@@ -180,6 +180,8 @@ impl Game {
                     );
                     log::info!("{}", self.race_stats_summary());
                     log::info!("{}", self.launch_summary());
+                    log::info!("{}", self.frame_summary());
+                    log::info!("{}", self.dust_ledger.summary());
                     return Err(QuitEvent);
                 }
                 return Ok(if let Some(when) = time::Instant::now().checked_add(wait) {
@@ -276,6 +278,12 @@ impl Game {
             self.window.inner_size(),
             self.window.scale_factor() as f32,
         );
+        if self.script.is_some() {
+            self.frame_ms.push((
+                frame_started.elapsed().as_secs_f32() * 1e3,
+                render_started.elapsed().as_secs_f32() * 1e3,
+            ));
+        }
         if cfg!(debug_assertions) && self.frame_index.is_multiple_of(20) {
             log::debug!(
                 "cpu frame sim={:.1}ms ui={:.1}ms render={:.1}ms total={:.1}ms",

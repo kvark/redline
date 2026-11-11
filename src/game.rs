@@ -16,8 +16,11 @@ use crate::boost_pad;
 use crate::config;
 use crate::control;
 use crate::countdown;
+use crate::edge_dust;
+use crate::gate_pylons;
 use crate::lap_callout;
 use crate::launch;
+use crate::mars_sky;
 use crate::menu;
 use crate::planet;
 use crate::race;
@@ -66,6 +69,11 @@ pub struct Game {
     steer_left: bool,
     steer_right: bool,
     dust: usize,
+    /// Fixed-pool rust plumes from ribbon-edge running and scrubs.
+    edge_dust: usize,
+    dust_ledger: edge_dust::Ledger,
+    /// Fixed physics steps taken; gates edge-dust emission deterministically.
+    step_index: u32,
     decoration_lights: Vec<blade_engine::LightHandle>,
     smoke_frames_left: Option<u32>,
     /// Frame counter for the camera / vehicle state-trace journal.
@@ -90,6 +98,10 @@ pub struct Game {
     gap_timer: split::GapTimer,
     /// Races started this session; varies AI launches between rematches.
     race_seed: u32,
+    /// `--freeze-at`: hold the sim at this time so captures share one pose.
+    freeze_at: Option<f32>,
+    /// CPU frame times (ms) for the end-of-script perf line.
+    frame_ms: Vec<(f32, f32)>,
 }
 
 pub struct QuitEvent;
@@ -186,15 +198,13 @@ impl Game {
                 })
             },
         });
-        // A higher resolution environment keeps individual stars point-like instead of
-        // turning every texel into a large square on the sky dome. WebGL is happier
-        // with a smaller map at boot.
+        // Baked dusty Mars dome; WebGL is happier with a smaller map at boot.
         let (sky_w, sky_h) = if cfg!(target_arch = "wasm32") {
             (512, 256)
         } else {
             (1024, 512)
         };
-        engine.create_environment_map("mars-sky", sky_w, sky_h, &starfield(sky_w, sky_h));
+        engine.create_environment_map("mars-sky", sky_w, sky_h, &mars_sky::sky(sky_w, sky_h));
 
         let active_map = menu::MapId::MarsClassic;
         let (planet, planet_cfg, world_handles, spawn, race, boost_pads) =
@@ -234,6 +244,8 @@ impl Game {
                 },
             },
         );
+
+        let edge_dust = engine.create_particle_system("edge-dust", &edge_dust::effect());
 
         log::info!(
             "drivers ready: player + {} AI (script={:?}, menu={})",
@@ -281,6 +293,9 @@ impl Game {
             steer_left: false,
             steer_right: false,
             dust,
+            edge_dust,
+            dust_ledger: edge_dust::Ledger::default(),
+            step_index: 0,
             decoration_lights: Vec::new(),
             smoke_frames_left: cli.smoke_frames,
             frame_index: 0,
@@ -301,6 +316,8 @@ impl Game {
                 .then(|| launch::Start::new(ai_count, 0)),
             gap_timer: split::GapTimer::default(),
             race_seed: 0,
+            freeze_at: cli.freeze_at,
+            frame_ms: Vec::new(),
         }
     }
 
@@ -383,7 +400,7 @@ impl Game {
     fn update_time(&mut self) {
         let wall = self.last_physics_update.elapsed().as_secs_f32();
         self.last_physics_update = time::Instant::now();
-        if self.is_paused {
+        if self.is_paused || self.frozen() {
             return;
         }
         // Fixed step keeps Rapier/controls identical on lavapipe, a real GPU,
@@ -397,7 +414,7 @@ impl Game {
         let mut steps = 0u32;
         let physics_started = time::Instant::now();
         while self.physics_accum >= PHYSICS_DT && steps < max_steps {
-            if self.script_finished() {
+            if self.script_finished() || self.frozen() {
                 break;
             }
             self.physics_accum -= PHYSICS_DT;
@@ -539,6 +556,7 @@ impl Game {
             self.open_menu();
         }
         self.emit_dust(&pose, dt);
+        self.emit_edge_dust();
         if !drive_locked {
             self.record_sample(&pose, linear, angular, forward_speed, lateral_speed);
         }
@@ -656,6 +674,42 @@ impl Game {
             let contact = pos - up * radius;
             self.engine
                 .particle_burst(self.dust, count, [contact.x, contact.y, contact.z]);
+        }
+    }
+
+    /// Rust plumes for every craft running the ribbon edge or scrubbing.
+    fn emit_edge_dust(&mut self) {
+        self.step_index = self.step_index.wrapping_add(1);
+        let player_up = self.vehicle.pose(&self.engine).position.normalize_or_zero();
+        let craft =
+            std::iter::once(&self.vehicle).chain(self.ai_drivers.iter().map(|d| &d.vehicle));
+        let mut bursts = Vec::new();
+        for (id, vehicle) in craft.enumerate() {
+            if !edge_dust::gate(self.step_index, id) {
+                continue;
+            }
+            let (pose, linear, _, forward_speed, lateral_speed) = vehicle.motion(&self.engine);
+            let query = planet::query_track(pose.position, &self.planet.track);
+            let off = planet::off_track_distance(&query, self.planet.track_width);
+            let want = edge_dust::plume(off, lateral_speed, linear.length());
+            if want == 0 {
+                continue;
+            }
+            let up = pose.position.normalize_or_zero();
+            let back = pose.orientation * glam::Vec3::Z * forward_speed.signum();
+            // Behind the craft, on the outside of the ribbon.
+            let outward = query.side * query.lateral.signum() * 0.6;
+            bursts.push((want, pose.position - up * 0.35 - back * 1.1 + outward));
+        }
+        for (want, at) in bursts {
+            let granted = self.dust_ledger.reserve(self.sim_time, want);
+            if granted > 0 {
+                self.engine
+                    .particle_burst(self.edge_dust, granted, at.into());
+            }
+        }
+        if let Some(system) = self.engine.particle_system_mut(self.edge_dust) {
+            system.axis = player_up.into();
         }
     }
 
@@ -960,6 +1014,27 @@ impl Game {
         )
     }
 
+    fn frozen(&self) -> bool {
+        self.freeze_at.is_some_and(|t| self.sim_time >= t)
+    }
+
+    /// One-line CPU frame-time summary for the end-of-script log.
+    pub(crate) fn frame_summary(&self) -> String {
+        let stats = |pick: fn(&(f32, f32)) -> f32| {
+            let mut sorted: Vec<f32> = self.frame_ms.iter().map(pick).collect();
+            sorted.sort_by(f32::total_cmp);
+            let n = sorted.len().max(1);
+            let mean = sorted.iter().sum::<f32>() / n as f32;
+            (mean, sorted.get(n * 95 / 100).copied().unwrap_or(0.0))
+        };
+        let (mean, p95) = stats(|f| f.0);
+        let (render_mean, render_p95) = stats(|f| f.1);
+        format!(
+            "Frame stats: frames={} cpu_mean={mean:.2}ms cpu_p95={p95:.2}ms render_mean={render_mean:.2}ms render_p95={render_p95:.2}ms",
+            self.frame_ms.len()
+        )
+    }
+
     pub(crate) fn script_finished(&self) -> bool {
         let timed_out = self
             .record_seconds
@@ -978,6 +1053,7 @@ fn wants_lights(script: Option<trace::Script>, smoke: Option<u32>) -> bool {
 }
 
 struct Cli {
+    freeze_at: Option<f32>,
     smoke_frames: Option<u32>,
     record_path: Option<PathBuf>,
     script: Option<trace::Script>,
@@ -1057,6 +1133,7 @@ fn parse_cli() -> Cli {
     // exercise the same fixed-step drives as native (race keeps AI on).
     // Recording still needs a filesystem, so it stays off.
     let mut cli = Cli {
+        freeze_at: None,
         smoke_frames: None,
         record_path: None,
         script: None,
@@ -1103,6 +1180,7 @@ fn parse_cli() -> Cli {
 #[cfg(not(target_arch = "wasm32"))]
 fn parse_cli() -> Cli {
     let mut cli = Cli {
+        freeze_at: None,
         smoke_frames: None,
         record_path: None,
         script: None,
@@ -1130,6 +1208,9 @@ fn parse_cli() -> Cli {
             }
             "--seconds" => {
                 cli.seconds = args.next().and_then(|value| value.parse().ok());
+            }
+            "--freeze-at" => {
+                cli.freeze_at = args.next().and_then(|value| value.parse().ok());
             }
             _ => {}
         }
@@ -1347,6 +1428,29 @@ fn populate_world(
             blade_engine::DynamicInput::Empty,
         ));
     }
+    if let Some(model) = gate_pylons::write_model(
+        &generated,
+        &planet.track,
+        planet.track_width,
+        planet_cfg,
+        race_cfg.checkpoint_count,
+    ) {
+        let pylons = blade_engine::config::Object {
+            name: "gate-pylons".to_string(),
+            visuals: vec![blade_engine::config::Visual {
+                model: relative_model(assets, &model),
+                ..Default::default()
+            }],
+            // Cosmetic only: no colliders, so lap physics is untouched.
+            colliders: Vec::new(),
+            additional_mass: None,
+        };
+        world_handles.push(engine.add_object(
+            &pylons,
+            blade_engine::Transform::default(),
+            blade_engine::DynamicInput::Empty,
+        ));
+    }
     log::info!(
         "laid {} boost pads (sector@sample: {})",
         boost_pads.len(),
@@ -1465,92 +1569,13 @@ fn project_tangent(v: glam::Vec3, up: glam::Vec3) -> glam::Vec3 {
     }
 }
 
-fn starfield(width: u32, height: u32) -> Vec<[u8; 4]> {
-    let mut pixels = Vec::with_capacity((width * height) as usize);
-    for y in 0..height {
-        let v = (y as f32 + 0.5) / height as f32;
-        for x in 0..width {
-            let u = (x as f32 + 0.5) / width as f32;
-            let band = ((v - 0.58 - 0.10 * (u * consts::TAU).sin()).abs() / 0.09).powi(2);
-            let dust = (-band).exp();
-            let grain = (hash_u32(x.wrapping_add(y.wrapping_mul(width))) & 15) as f32 / 15.0;
-            pixels.push([
-                (2.0 + dust * (5.0 + grain * 3.0)) as u8,
-                (3.0 + dust * (4.0 + grain * 2.0)) as u8,
-                (7.0 + dust * (7.0 + grain * 4.0)) as u8,
-                255,
-            ]);
-        }
-    }
-
-    // Most stars are dim and neutral; a few carry the subtle warm/cool color seen
-    // in real stellar populations. One texel at this resolution is only 0.35° wide.
-    for i in 0..3100u32 {
-        let h = hash_u32(i.wrapping_mul(747_796_405).wrapping_add(2_891_336_453));
-        let x = h % width;
-        let y = hash_u32(h ^ 0xA341_316C) % height;
-        let magnitude = ((h >> 16) & 0xFF) as f32 / 255.0;
-        let bright = (55.0 + 200.0 * magnitude.powf(3.2)) as u8;
-        let tint = (h >> 8) & 3;
-        let color = match tint {
-            0 => [
-                bright,
-                bright.saturating_sub(14),
-                bright.saturating_sub(30),
-                255,
-            ],
-            1 => [
-                bright.saturating_sub(18),
-                bright.saturating_sub(8),
-                bright,
-                255,
-            ],
-            _ => [bright, bright, bright.saturating_sub(4), 255],
-        };
-        pixels[(y * width + x) as usize] = color;
-    }
-
-    // Disc in the environment map at the directional-light heading so the
-    // sky actually shows a sun, not a single texel.
-    let sun = planet::SUN_DIRECTION.normalize();
-    let sun_u = (sun.x.atan2(sun.z) / consts::PI + 1.0) * 0.5;
-    let sun_v = sun.y.asin() / consts::PI + 0.5;
-    let sun_x = sun_u * width as f32;
-    let sun_y = sun_v * height as f32;
-    let radius = (height as f32 * 0.055).max(5.0);
-    let glow = radius * 2.8;
-    for y in 0..height {
-        for x in 0..width {
-            let mut dx = x as f32 - sun_x;
-            let dy = y as f32 - sun_y;
-            if dx > width as f32 * 0.5 {
-                dx -= width as f32;
-            } else if dx < -(width as f32 * 0.5) {
-                dx += width as f32;
-            }
-            let dist = (dx * dx + dy * dy).sqrt();
-            if dist > glow {
-                continue;
-            }
-            let core = (1.0 - (dist / radius).clamp(0.0, 1.0)).powf(2.0);
-            let halo = (1.0 - (dist / glow).clamp(0.0, 1.0)).powf(1.6) * 0.35;
-            let t = (core + halo).clamp(0.0, 1.0);
-            let dst = &mut pixels[(y * width + x) as usize];
-            dst[0] = dst[0].saturating_add((255.0 * t) as u8);
-            dst[1] = dst[1].saturating_add((220.0 * t) as u8);
-            dst[2] = dst[2].saturating_add((160.0 * t) as u8);
-        }
-    }
-    pixels
-}
-
 fn format_time(seconds: f32) -> String {
     let m = (seconds / 60.0).floor() as u32;
     let s = seconds - m as f32 * 60.0;
     format!("{m}:{s:05.2}")
 }
 
-fn hash_u32(x: u32) -> u32 {
+pub(crate) fn hash_u32(x: u32) -> u32 {
     let mut x = x.wrapping_add(0x9E37_79B9);
     x = (x ^ (x >> 16)).wrapping_mul(0x7FEB_352D);
     x = (x ^ (x >> 15)).wrapping_mul(0x846C_A68B);
@@ -1563,21 +1588,3 @@ fn hash_frame(dt: f32, p: glam::Vec3) -> f32 {
 }
 
 include!("game_ui.inc.rs");
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn starfield_is_sparse_and_point_like() {
-        let sky = super::starfield(512, 256);
-        assert_eq!(sky.len(), 512 * 256);
-        let luminous = sky
-            .iter()
-            .filter(|pixel| pixel[0].max(pixel[1]).max(pixel[2]) > 50)
-            .count();
-        assert!(luminous > 1_000);
-        assert!(
-            luminous < sky.len() / 30,
-            "stars should not flatten the sky"
-        );
-    }
-}
