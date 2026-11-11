@@ -27,6 +27,8 @@ mod lap_callout;
 mod menu;
 mod planet;
 mod race;
+mod race_stats;
+mod racecraft;
 mod results;
 mod route_map;
 mod speed_fx;

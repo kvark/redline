@@ -20,6 +20,8 @@ use crate::lap_callout;
 use crate::menu;
 use crate::planet;
 use crate::race;
+use crate::race_stats;
+use crate::racecraft;
 use crate::results;
 use crate::speed_fx;
 use crate::trace;
@@ -42,6 +44,10 @@ pub struct Game {
     planet: planet::GeneratedPlanet,
     planet_cfg: config::Planet,
     race: race::Race,
+    /// Pack stats (passes, pad hits, contacts, recoveries) for the end-of-race log.
+    race_stats: race_stats::RaceStats,
+    /// Mean spacing (m) between track samples on the active circuit.
+    track_spacing: f32,
     /// Ribbon boost pads for the active circuit (one strip per timed sector).
     boost_pads: Vec<boost_pad::Pad>,
     /// Eased chase-camera FOV kick (radians) from speed + boost.
@@ -226,6 +232,7 @@ impl Game {
             in_menu
         );
 
+        let spacing = track_spacing(&planet.track);
         let egui_context = egui::Context::default();
         let egui_viewport_id = egui_context.viewport_id();
         let egui_state =
@@ -247,6 +254,8 @@ impl Game {
             planet,
             planet_cfg,
             race,
+            race_stats: race_stats::RaceStats::default(),
+            track_spacing: spacing,
             boost_pads,
             fov_kick: 0.0,
             spawn,
@@ -291,6 +300,7 @@ impl Game {
         self.world_handles = world_handles;
         self.spawn = spawn;
         self.race = race;
+        self.track_spacing = track_spacing(&self.planet.track);
         self.active_map = map;
         self.last_camera_orient = self.spawn.orientation;
     }
@@ -328,6 +338,7 @@ impl Game {
                 spawn_ai_drivers(&mut self.engine, &self.veh_config, &self.planet.track);
         }
         self.race.reset();
+        self.race_stats.reset();
         self.fov_kick = 0.0;
         self.last_camera_orient = self.spawn.orientation;
         self.in_menu = false;
@@ -426,15 +437,27 @@ impl Game {
             self.vehicle
                 .apply_gravity(&mut self.engine, self.planet_cfg.gravity, dt);
             self.vehicle.apply_stability(&mut self.engine, dt);
+            let track = &self.planet.track;
+            let field: Vec<ai::Racer> = std::iter::once(&self.vehicle)
+                .chain(self.ai_drivers.iter().map(|d| &d.vehicle))
+                .map(|vehicle| ai::Racer::observe(vehicle, &self.engine, track))
+                .collect();
+            let course = ai::Course {
+                track,
+                track_width: self.planet.track_width,
+                spacing: self.track_spacing,
+                pads: &self.boost_pads,
+                gravity: self.planet_cfg.gravity,
+                pack_mean: (self.ai_drivers.len() > 1).then(|| {
+                    self.ai_drivers.iter().map(|d| d.distance()).sum::<f32>()
+                        / self.ai_drivers.len() as f32
+                }),
+            };
             for driver in self.ai_drivers.iter_mut() {
-                driver.update(
-                    &mut self.engine,
-                    &self.planet.track,
-                    self.planet.track_width,
-                    &self.boost_pads,
-                    self.planet_cfg.gravity,
-                    dt,
-                );
+                let recovered = driver.update(&mut self.engine, &course, &field, dt);
+                if recovered {
+                    self.race_stats.record_recovery(true);
+                }
             }
         }
         self.engine.update(dt);
@@ -457,6 +480,10 @@ impl Game {
                 let ai_pose = driver.vehicle.pose(&self.engine);
                 let _ = driver.race.update(ai_pose.position, dt);
             }
+            if self.recovered_this_step != 0 {
+                self.race_stats.record_recovery(false);
+            }
+            self.observe_race_stats();
         }
         if self
             .lap_callout
@@ -688,6 +715,7 @@ impl Game {
                 pairs.insert(if a < b { (a, b) } else { (b, a) });
             }
         }
+        self.race_stats.observe_contacts(&pairs);
         for (a, b) in pairs {
             let (handle_a, pos_a, mass_a, recoil_a) = self.bump_state(a);
             let (handle_b, pos_b, mass_b, recoil_b) = self.bump_state(b);
@@ -709,6 +737,76 @@ impl Game {
             self.vehicle_mut(a).register_bump();
             self.vehicle_mut(b).register_bump();
         }
+    }
+
+    fn observe_race_stats(&mut self) {
+        let track = &self.planet.track;
+        let width = self.planet.track_width;
+        let entry = |vehicle: &vehicle::Vehicle, is_ai: bool| {
+            let query = planet::query_track(vehicle.pose(&self.engine).position, track);
+            race_stats::Entry {
+                sample: query.index,
+                is_ai,
+                off_track: planet::off_track_distance(&query, width),
+            }
+        };
+        let entries: Vec<_> = std::iter::once(entry(&self.vehicle, false))
+            .chain(self.ai_drivers.iter().map(|d| entry(&d.vehicle, true)))
+            .collect();
+        self.race_stats
+            .observe(&entries, track.len(), self.track_spacing);
+    }
+
+    /// One-line pack summary for the end-of-race log.
+    pub(crate) fn race_stats_summary(&self) -> String {
+        let stats = &self.race_stats;
+        let ai_pad_hits: u32 = self.ai_drivers.iter().map(|d| d.vehicle.pad_hits()).sum();
+        let ai_pads_passed: u32 = self.ai_drivers.iter().map(|d| d.pads_passed()).sum();
+        let ai_distance: f32 = self.ai_drivers.iter().map(|d| d.distance()).sum();
+        let order = stats
+            .order()
+            .iter()
+            .map(|&id| {
+                if id == 0 {
+                    "P".to_string()
+                } else {
+                    format!("AI{id}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(">");
+        let tally = self
+            .ai_drivers
+            .iter()
+            .fold(racecraft::Tally::default(), |mut sum, d| {
+                let t = d.tally();
+                sum.passes_committed += t.passes_committed;
+                sum.passes_completed += t.passes_completed;
+                sum.passes_aborted += t.passes_aborted;
+                sum.defends += t.defends;
+                sum
+            });
+        format!(
+            "Race stats: ai_overtakes={} position_changes={} ai_pad_hits={} ai_pads_passed={} ai_distance={:.0}m contacts={} \
+             ai_off_ribbon={} ai_recoveries={} player_off_ribbon={} player_recoveries={} \
+             spread={:.1}m order={} ai_passes(committed/completed/aborted)={}/{}/{} ai_defends={}",
+            stats.ai_overtakes,
+            stats.position_changes,
+            ai_pad_hits,
+            ai_pads_passed,
+            ai_distance,
+            stats.contacts,
+            stats.ai_off_ribbon,
+            stats.ai_recoveries,
+            stats.player_off_ribbon,
+            stats.player_recoveries,
+            stats.spread(),
+            order,
+            tally.passes_committed,
+            tally.passes_completed,
+            tally.passes_aborted,
+            tally.defends,
+        )
     }
 
     fn bump_state(&self, id: usize) -> (blade_engine::ObjectHandle, glam::Vec3, f32, f32) {
@@ -818,23 +916,25 @@ fn opponent_specs() -> &'static [OpponentSpec] {
     }
     #[cfg(all(not(target_arch = "wasm32"), not(debug_assertions)))]
     {
+        // Quicker cars start further back so the pack closes up and has to
+        // race through traffic instead of spreading out from the grid.
         static SPECS: [OpponentSpec; 3] = [
             OpponentSpec {
                 index: 8,
                 lane: -2.1,
-                speed: 15.5,
+                speed: 16.0,
                 kit: menu::KIT_HATCH,
             },
             OpponentSpec {
-                index: 13,
+                index: 12,
                 lane: 2.0,
-                speed: 14.5,
+                speed: 15.6,
                 kit: menu::KIT_SEDAN,
             },
             OpponentSpec {
-                index: 18,
+                index: 16,
                 lane: -0.6,
-                speed: 16.5,
+                speed: 15.2,
                 kit: menu::KIT_TAXI,
             },
         ];
@@ -989,6 +1089,17 @@ fn relative_model(assets: &std::path::Path, model: &std::path::Path) -> String {
         .into_owned()
 }
 
+/// Mean distance (m) between consecutive samples of the closed ribbon.
+fn track_spacing(track: &[planet::TrackSample]) -> f32 {
+    if track.len() < 2 {
+        return 1.0;
+    }
+    let total: f32 = (0..track.len())
+        .map(|i| (track[(i + 1) % track.len()].position - track[i].position).length())
+        .sum();
+    total / track.len() as f32
+}
+
 fn spawn_ai_drivers(
     engine: &mut blade_engine::Engine,
     veh_config: &config::Vehicle,
@@ -997,10 +1108,12 @@ fn spawn_ai_drivers(
     opponent_specs()
         .iter()
         .copied()
-        .map(|spec| {
+        .enumerate()
+        .map(|(slot, spec)| {
             ai::Driver::spawn(
                 engine, veh_config, track, spec.index, spec.lane, spec.speed, spec.kit,
             )
+            .with_id(slot + 1)
         })
         .collect()
 }
@@ -1022,11 +1135,13 @@ fn populate_world(
     let gen_started = time::Instant::now();
     let planet = planet::generate(planet_cfg, &generated);
     log::info!(
-        "generated {} in {:.1}ms ({} decorations, {} track samples)",
+        "generated {} in {:.1}ms ({} decorations, {} track samples, {:.0}m lap, {:.1}m ribbon)",
         map.label(),
         gen_started.elapsed().as_secs_f32() * 1e3,
         planet.decorations.len(),
-        planet.track.len()
+        planet.track.len(),
+        track_spacing(&planet.track) * planet.track.len() as f32,
+        planet.track_width,
     );
 
     let mut world_handles = Vec::new();
