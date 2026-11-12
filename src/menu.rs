@@ -115,6 +115,16 @@ impl MapId {
         }
     }
 
+    /// Stable id for per-circuit saves (ghost files).
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::MarsClassic => "mars-equator",
+            Self::PhobosTight => "phobos-needle",
+            Self::HellasWide => "hellas-sweep",
+            Self::OlympusClimb => "olympus-ascent",
+        }
+    }
+
     pub fn blurb(self) -> &'static str {
         match self {
             Self::MarsClassic => {

@@ -13,8 +13,9 @@ const HALF_THICK: f32 = 0.2;
 /// Footing sunk into the regolith so uneven ground never shows a gap.
 const SINK: f32 = 0.5;
 
+/// Box soup for one emissive GLB mesh (shared with the ghost hologram).
 #[derive(Default)]
-struct Boxes {
+pub(crate) struct Boxes {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     indices: Vec<u32>,
@@ -22,7 +23,7 @@ struct Boxes {
 
 impl Boxes {
     /// Axis-aligned box in the (x, y, z) frame around `center`.
-    fn push(&mut self, center: glam::Vec3, axes: [glam::Vec3; 3], half: glam::Vec3) {
+    pub(crate) fn push(&mut self, center: glam::Vec3, axes: [glam::Vec3; 3], half: glam::Vec3) {
         let half = half.to_array();
         for (axis, &normal) in axes.iter().enumerate() {
             let (u, v) = (axes[(axis + 1) % 3], axes[(axis + 2) % 3]);
@@ -61,7 +62,12 @@ impl Boxes {
         }
     }
 
-    fn finish(self, name: &str, base_color: [f32; 4], emissive: [f32; 3]) -> glb::MeshData {
+    pub(crate) fn finish(
+        self,
+        name: &str,
+        base_color: [f32; 4],
+        emissive: [f32; 3],
+    ) -> glb::MeshData {
         glb::MeshData {
             name: name.to_string(),
             tex_coords: vec![[0.5, 0.5]; self.positions.len()],
