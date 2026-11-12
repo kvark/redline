@@ -84,6 +84,20 @@ clear it. Scripted runs and `--smoke` skip ghosts unless `REDLINE_GHOST_DIR` is
 set, so CI never sees a player's saved lap. The web build keeps the ghost for
 the browser session only.
 
+Championship: the menu's Championship entry runs three races on Mars Equator
+with points by finishing order, 10-6-4-3 for P1-P4 (whoever is classified at
+the player's finish; the web build's two AI included). Ties on points go to the
+better best race finish, then the faster best lap. The results board shows the
+running standings, this race's points and race N of 3; its Next Race button
+(Enter) starts the next race, and after race 3 it crowns the champion and
+offers New Championship. Standings persist in `championship-mars-equator.ron`
+next to the ghosts (web: localStorage `redline:championship-mars-equator`), so
+quitting mid-way resumes at the same race. Reset Championship in the menu
+deletes the save and zeroes the points. Bad or foreign saves are skipped with a
+warning. Scripted runs and `--smoke` never touch it unless `--championship`
+(web: `?championship=1`) is passed, which also scores the scripted race and
+holds for the results board.
+
 ## Web / WASM
 
 Requires a WebGL2 browser. Assets are embedded at compile time. `.cargo/config.toml`
