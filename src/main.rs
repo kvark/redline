@@ -20,6 +20,8 @@ mod ai;
 mod audio;
 #[cfg(not(target_arch = "wasm32"))]
 mod audio_out;
+#[cfg(any(target_arch = "wasm32", test))]
+mod audio_web;
 mod boost_pad;
 mod config;
 mod control;
@@ -40,6 +42,7 @@ mod results;
 mod route_map;
 mod speed_fx;
 mod split;
+mod synth;
 mod trace;
 mod vehicle;
 
