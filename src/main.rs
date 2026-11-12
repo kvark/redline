@@ -23,6 +23,7 @@ mod audio_out;
 #[cfg(any(target_arch = "wasm32", test))]
 mod audio_web;
 mod boost_pad;
+mod championship;
 mod config;
 mod control;
 mod countdown;

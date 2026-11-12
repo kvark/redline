@@ -1,4 +1,5 @@
 const GHOST_CYAN: egui::Color32 = egui::Color32::from_rgb(110, 220, 255);
+const CHAMP_GOLD: egui::Color32 = egui::Color32::from_rgb(255, 205, 90);
 
 impl Game {
     pub fn on_event(
@@ -62,7 +63,7 @@ impl Game {
             )
             && self.race_results.is_some()
         {
-            self.start_race();
+            self.rematch();
             self.window.request_redraw();
             return Ok(winit::event_loop::ControlFlow::Poll);
         }
@@ -524,6 +525,29 @@ impl Game {
                 )
             })
             .collect();
+        let champ = self.champ_mode.then(|| {
+            let table = &self.championship.table;
+            let rows: Vec<(String, String, String, bool)> = table
+                .table()
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    let won = self.championship.last.iter().find(|l| l.0 == e.racer);
+                    (
+                        format!("{}  {}", i + 1, championship::name(e.racer)),
+                        won.map_or(String::new(), |l| format!("+{}", l.1)),
+                        format!("{} pts", e.points),
+                        e.racer == 0,
+                    )
+                })
+                .collect();
+            (table.races, table.champion(), rows)
+        });
+        let rematch_label = match champ {
+            Some((_, Some(_), _)) => "New Championship".to_string(),
+            Some((races, None, _)) => format!("Next Race {}/{}", races + 1, championship::RACES),
+            None => "Rematch".to_string(),
+        };
         let mut rematch_clicked = false;
         let mut continue_clicked = false;
         egui::Area::new(egui::Id::new("race_results"))
@@ -587,23 +611,48 @@ impl Game {
                                     },
                                 );
                             }
+                            if let Some(&(races, champion, ref rows)) = champ.as_ref() {
+                                ui.add_space(10.0);
+                                let title = format!(
+                                    "CHAMPIONSHIP  ·  RACE {races} OF {}",
+                                    championship::RACES
+                                );
+                                ui.label(egui::RichText::new(title).size(18.0).strong().color(CHAMP_GOLD));
+                                egui::Grid::new("championship").num_columns(3).spacing([24.0, 2.0]).show(
+                                    ui,
+                                    |ui| {
+                                        for row in rows {
+                                            let color = if row.3 { CHAMP_GOLD } else { egui::Color32::from_rgb(220, 220, 220) };
+                                            ui.colored_label(color, &row.0);
+                                            ui.colored_label(color, &row.1);
+                                            ui.colored_label(color, &row.2);
+                                            ui.end_row();
+                                        }
+                                    },
+                                );
+                                if let Some(racer) = champion {
+                                    let text = format!("CHAMPION: {}", championship::name(racer));
+                                    ui.label(egui::RichText::new(text).size(26.0).strong().color(CHAMP_GOLD));
+                                    ui.label("Championship complete");
+                                }
+                            }
                             ui.add_space(14.0);
                             ui.horizontal(|ui| {
                                 if ui
-                                    .add_sized([120.0, 32.0], egui::Button::new("Rematch"))
+                                    .add_sized([150.0, 32.0], egui::Button::new(&rematch_label))
                                     .clicked()
                                 {
                                     rematch_clicked = true;
                                 }
                                 if ui
-                                    .add_sized([120.0, 32.0], egui::Button::new("Continue"))
+                                    .add_sized([150.0, 32.0], egui::Button::new("Continue"))
                                     .clicked()
                                 {
                                     continue_clicked = true;
                                 }
                             });
                             ui.label(
-                                egui::RichText::new("Enter rematch · Esc menu · auto-return")
+                                egui::RichText::new(format!("Enter {} · Esc menu · auto-return", rematch_label.to_lowercase()))
                                     .size(14.0)
                                     .color(egui::Color32::from_rgba_unmultiplied(200, 200, 200, 160)),
                             );
@@ -612,7 +661,7 @@ impl Game {
             });
         if rematch_clicked {
             // Same craft + circuit; start_race clears results and restarts lights.
-            self.start_race();
+            self.rematch();
         } else if continue_clicked {
             self.race_results = None;
             self.open_menu();
@@ -660,11 +709,52 @@ impl Game {
                     }
                 });
 
+                ui.add_space(12.0);
+                let mut start_champ = false;
+                ui.group(|ui| {
+                    ui.set_min_width(360.0);
+                    ui.label(egui::RichText::new("Championship").strong());
+                    let champ = &self.championship;
+                    ui.label(format!(
+                        "{} races on {} · points 10-6-4-3",
+                        championship::RACES,
+                        menu::MapId::MarsClassic.label()
+                    ));
+                    let standings: Vec<String> = champ
+                        .table
+                        .table()
+                        .iter()
+                        .map(|e| format!("{} {}", championship::name(e.racer), e.points))
+                        .collect();
+                    if !standings.is_empty() {
+                        ui.colored_label(CHAMP_GOLD, standings.join("  ·  "));
+                    }
+                    let label = if let Some(racer) = champ.table.champion() {
+                        ui.label(format!("Complete: {} won", championship::name(racer)));
+                        "New Championship".to_string()
+                    } else if champ.in_progress() {
+                        format!("Resume Championship: race {} of {}", champ.race_number(), championship::RACES)
+                    } else {
+                        "Start Championship".to_string()
+                    };
+                    let has_points = champ.table.races > 0;
+                    if ui.add_sized([300.0, 32.0], egui::Button::new(label)).clicked() {
+                        start_champ = true;
+                    }
+                    if has_points && ui.button("Reset Championship").clicked() {
+                        self.championship.reset();
+                    }
+                });
+                if start_champ {
+                    self.start_championship();
+                }
+
                 ui.add_space(20.0);
                 if ui
                     .add_sized([220.0, 36.0], egui::Button::new("Enter Circuit"))
                     .clicked()
                 {
+                    self.champ_mode = false;
                     self.start_race();
                 }
 
@@ -687,6 +777,14 @@ impl Game {
             self.menu_vehicle.label(),
             self.active_map.label()
         ));
+        if self.champ_mode {
+            let race = match self.race.finished {
+                true => self.championship.table.races,
+                false => self.championship.race_number(),
+            };
+            let text = format!("Championship  race {race} / {}", championship::RACES);
+            ui.colored_label(CHAMP_GOLD, text);
+        }
         ui.separator();
         let pose = self.vehicle.pose(&self.engine);
         let (_cp, progress) = planet::track_progress(pose.position, &self.planet.track);

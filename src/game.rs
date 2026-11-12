@@ -14,6 +14,7 @@ use web_time as time;
 use crate::ai;
 use crate::audio;
 use crate::boost_pad;
+use crate::championship;
 use crate::config;
 use crate::control;
 use crate::countdown;
@@ -112,6 +113,10 @@ pub struct Game {
     ghost: Option<ghost::Session>,
     /// Hologram lattice + glow particles, spawned the first time a ghost plays.
     ghost_object: Option<(blade_engine::ObjectHandle, usize)>,
+    /// Three-race Mars championship; persists only for play or `--championship`.
+    championship: championship::Session,
+    /// The race in progress counts toward the championship.
+    champ_mode: bool,
 }
 
 pub struct QuitEvent;
@@ -269,6 +274,19 @@ impl Game {
         if let Some(session) = ghost.as_mut() {
             session.begin(active_map.key(), spacing * planet.track.len() as f32);
         }
+        let champ_store = championship::persists(
+            cli.script.is_some(),
+            cli.smoke_frames.is_some(),
+            cli.championship,
+        )
+        .then(open_store)
+        .flatten();
+        let mut championship =
+            championship::Session::new(champ_store, menu::MapId::MarsClassic.key());
+        let champ_mode = cli.championship && cli.script.is_some() && cli.smoke_frames.is_none();
+        if champ_mode {
+            championship.start();
+        }
         let ai_count = ai_drivers.len();
         let egui_context = egui::Context::default();
         let egui_viewport_id = egui_context.viewport_id();
@@ -336,6 +354,8 @@ impl Game {
             audio_cues: audio::CueTracker::new(),
             ghost,
             ghost_object: None,
+            championship,
+            champ_mode,
         }
     }
 
@@ -564,7 +584,10 @@ impl Game {
             );
             self.lap_callout = None;
             // Scripts/smoke must not block on the results board.
-            if was_finish && self.script.is_none() && self.smoke_frames_left.is_none() {
+            if was_finish
+                && (self.script.is_none() || self.champ_mode)
+                && self.smoke_frames_left.is_none()
+            {
                 self.race_results = self
                     .pending_results
                     .take()
@@ -691,6 +714,9 @@ impl Game {
                 self.pending_results = Some(self.capture_results());
                 if let Some(session) = self.ghost.as_mut() {
                     session.commit();
+                }
+                if self.champ_mode {
+                    self.score_championship();
                 }
             }
             race::RaceEvent::LapComplete {
@@ -1161,6 +1187,42 @@ impl Game {
         )
     }
 
+    /// Award championship points from the classification taken at the line.
+    fn score_championship(&mut self) {
+        let best_lap = |racer: usize| match racer {
+            0 => self.race.best_lap,
+            id => self.ai_drivers.get(id - 1).and_then(|d| d.race.best_lap),
+        };
+        let mut order: Vec<(usize, Option<f32>)> = self
+            .pending_results
+            .iter()
+            .flat_map(|board| board.standings.iter())
+            .map(|row| (row.racer, best_lap(row.racer)))
+            .collect();
+        if order.is_empty() {
+            order.push((0, best_lap(0)));
+        }
+        self.championship.record(&order);
+        log::info!("{}", self.championship.summary());
+    }
+
+    /// Results-board Rematch: in a championship, the next race (or a new
+    /// championship once all three are run).
+    fn rematch(&mut self) {
+        if self.champ_mode {
+            self.championship.start();
+        }
+        self.start_race();
+    }
+
+    /// Menu Championship: start or resume on Mars, the flagship circuit.
+    fn start_championship(&mut self) {
+        self.championship.start();
+        self.champ_mode = true;
+        self.menu_map = menu::MapId::MarsClassic;
+        self.start_race();
+    }
+
     fn frozen(&self) -> bool {
         self.freeze_at.is_some_and(|t| self.sim_time >= t)
     }
@@ -1188,7 +1250,10 @@ impl Game {
             .is_some_and(|limit| self.sim_time >= limit);
         let lap_done = matches!(self.script, Some(trace::Script::Lap))
             && (self.race.lap > 1 || self.race.finished || self.race.last_lap_time.is_some());
-        let race_done = matches!(self.script, Some(trace::Script::Race)) && self.race.finished;
+        // A `--championship` script holds for the results board (standings).
+        let board = self.champ_mode && (self.lap_callout.is_some() || self.race_results.is_some());
+        let race_done =
+            matches!(self.script, Some(trace::Script::Race)) && self.race.finished && !board;
         timed_out || lap_done || race_done
     }
 }
@@ -1206,12 +1271,20 @@ fn ghost_session(scripted: bool, smoke: bool) -> Option<ghost::Session> {
     if smoke || (scripted && !explicit) {
         return None;
     }
+    Some(ghost::Session::new(open_store()))
+}
+
+/// Ghost / championship storage: the data dir on native, localStorage on the
+/// web; None (session only) when neither is available.
+fn open_store() -> Option<Box<dyn ghost::Store>> {
     #[cfg(not(target_arch = "wasm32"))]
-    let store = ghost::default_dir().map(|dir| ghost::boxed(ghost::DirStore(dir)));
-    // The web build persists in localStorage; without it, the session only.
+    {
+        ghost::default_dir().map(|dir| ghost::boxed(ghost::DirStore(dir)))
+    }
     #[cfg(target_arch = "wasm32")]
-    let store = ghost::WebStore::open().map(ghost::boxed);
-    Some(ghost::Session::new(store))
+    {
+        ghost::WebStore::open().map(ghost::boxed)
+    }
 }
 
 /// Start lights run for play and for the scripted race (which practises its
@@ -1226,6 +1299,8 @@ struct Cli {
     record_path: Option<PathBuf>,
     script: Option<trace::Script>,
     seconds: Option<f32>,
+    /// `--championship` / `?championship=1`: a scripted race scores and saves.
+    championship: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1306,6 +1381,7 @@ fn parse_cli() -> Cli {
         record_path: None,
         script: None,
         seconds: None,
+        championship: false,
     };
     let search = web_sys::window()
         .and_then(|window| window.location().search().ok())
@@ -1332,6 +1408,9 @@ fn parse_cli() -> Cli {
             "smoke" => {
                 cli.smoke_frames = value.parse().ok();
             }
+            "championship" => {
+                cli.championship = championship::web_opt_in(pair);
+            }
             _ => {}
         }
     }
@@ -1353,6 +1432,7 @@ fn parse_cli() -> Cli {
         record_path: None,
         script: None,
         seconds: None,
+        championship: false,
     };
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -1376,6 +1456,9 @@ fn parse_cli() -> Cli {
             }
             "--seconds" => {
                 cli.seconds = args.next().and_then(|value| value.parse().ok());
+            }
+            "--championship" => {
+                cli.championship = true;
             }
             "--freeze-at" => {
                 cli.freeze_at = args.next().and_then(|value| value.parse().ok());
