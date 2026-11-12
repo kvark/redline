@@ -1,9 +1,9 @@
 //! Race audio cues: engine pitch, boost whooshes, and start-light beeps.
 //!
 //! This module is pure bookkeeping: it watches read-only race state and turns
-//! edges into [`Cue`]s. Synthesis and the output device live in `audio_out`
-//! (native only), on their own thread, so audio can never stall or steer the
-//! fixed-step sim. On WASM, or with no device, everything here stays silent.
+//! edges into [`Cue`]s. Synthesis lives in `synth`; output in `audio_out`
+//! (native, its own thread) or `audio_web` (Web Audio nodes), so audio can
+//! never stall or steer the fixed-step sim. With no device it stays silent.
 
 /// Engine note at a standstill (Hz).
 pub const ENGINE_IDLE_HZ: f32 = 55.0;
@@ -153,18 +153,8 @@ fn slot(cue: Cue) -> usize {
     }
 }
 
-/// WASM has no native output yet: a silent sink with the same API.
 #[cfg(target_arch = "wasm32")]
-pub struct Output;
-
-#[cfg(target_arch = "wasm32")]
-impl Output {
-    pub fn start() -> Self {
-        Self
-    }
-
-    pub fn send(&self, _command: Command) {}
-}
+pub use crate::audio_web::Output;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::audio_out::Output;

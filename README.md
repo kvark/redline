@@ -65,6 +65,12 @@ past while boosting, and the HUD flashes `» BOOST «`. Script runs log
 
 On the web build, the same scripts are available via query string, e.g. `?script=lap&seconds=45` or `?script=race&seconds=120`.
 
+Race audio (engine pitch with speed, boost whooshes, start-light beeps and a
+GO chord) is synthesized in code on both builds. Native streams it to the
+default device (`REDLINE_MUTE=1` to silence); the web build plays it through
+Web Audio, which browsers unlock on the first click or key press (`?mute=1` to
+silence). With no device or no working `AudioContext`, the race runs silently.
+
 ## Web / WASM
 
 Requires a WebGL2 browser. Assets are embedded at compile time. `.cargo/config.toml`
