@@ -19,6 +19,7 @@ use crate::control;
 use crate::countdown;
 use crate::edge_dust;
 use crate::gate_pylons;
+use crate::ghost;
 use crate::lap_callout;
 use crate::launch;
 use crate::mars_sky;
@@ -107,6 +108,10 @@ pub struct Game {
     audio: audio::Output,
     /// Edge detector feeding `audio`; reads race state, never writes it.
     audio_cues: audio::CueTracker,
+    /// Best-lap ghost; None for smoke and (unless `REDLINE_GHOST_DIR`) scripts.
+    ghost: Option<ghost::Session>,
+    /// Hologram lattice + glow particles, spawned the first time a ghost plays.
+    ghost_object: Option<(blade_engine::ObjectHandle, usize)>,
 }
 
 pub struct QuitEvent;
@@ -260,6 +265,10 @@ impl Game {
         );
 
         let spacing = track_spacing(&planet.track);
+        let mut ghost = ghost_session(cli.script.is_some(), cli.smoke_frames.is_some());
+        if let Some(session) = ghost.as_mut() {
+            session.begin(active_map.key(), spacing * planet.track.len() as f32);
+        }
         let ai_count = ai_drivers.len();
         let egui_context = egui::Context::default();
         let egui_viewport_id = egui_context.viewport_id();
@@ -325,6 +334,8 @@ impl Game {
             frame_ms: Vec::new(),
             audio: audio::Output::start(),
             audio_cues: audio::CueTracker::new(),
+            ghost,
+            ghost_object: None,
         }
     }
 
@@ -398,6 +409,10 @@ impl Game {
         self.start_countdown = lights.then(countdown::StartCountdown::new);
         self.launch = lights.then(|| launch::Start::new(self.ai_drivers.len(), self.race_seed));
         self.audio_cues.reset();
+        let lap_len = self.track_spacing * self.planet.track.len() as f32;
+        if let Some(session) = self.ghost.as_mut() {
+            session.begin(self.active_map.key(), lap_len);
+        }
         self.window.set_title(&format!(
             "Redline — {} / {}",
             self.menu_vehicle.label(),
@@ -536,6 +551,7 @@ impl Game {
                 self.race_stats.record_recovery(false);
             }
             self.observe_race_stats(dt);
+            self.tick_ghost(dt);
         }
         if self
             .lap_callout
@@ -673,6 +689,9 @@ impl Game {
                 self.lap_callout = Some(lap_callout::LapCallout::finish());
                 // Classify at the line, before the field drives on.
                 self.pending_results = Some(self.capture_results());
+                if let Some(session) = self.ghost.as_mut() {
+                    session.commit();
+                }
             }
             race::RaceEvent::LapComplete {
                 lap_time,
@@ -950,6 +969,90 @@ impl Game {
         self.gap_timer.observe(self.race_stats.distances(), dt);
     }
 
+    /// Record the player's lap on the ribbon odometer (read-only for the sim).
+    fn tick_ghost(&mut self, dt: f32) {
+        let Some(session) = self.ghost.as_mut() else {
+            return;
+        };
+        let pose = self.vehicle.pose(&self.engine);
+        let query = planet::query_track(pose.position, &self.planet.track);
+        let along = (pose.position - query.sample.position).dot(query.tangent);
+        let odometer = self.race_stats.distances().first().copied().unwrap_or(0.0) + along;
+        let boost = self.vehicle.boost_intensity() > 0.05;
+        let racing = !self.race.finished;
+        let lap = (pose.position, pose.orientation, boost);
+        // Laps finish at the line, just after the FINISH gate: commit the last one too.
+        if session.lapper.tick(odometer, lap, racing, dt).is_some() && !racing {
+            session.commit();
+        }
+    }
+
+    /// Seconds behind (+) / ahead of (−) the ghost at the player's spot on the lap.
+    fn ghost_split(&self) -> Option<f32> {
+        let session = self.ghost.as_ref()?;
+        let lapper = &session.lapper;
+        if self.in_menu || !lapper.running() {
+            return None;
+        }
+        session.playing.as_ref()?.split(lapper.clock(), lapper.s())
+    }
+
+    /// Move the hologram to the ghost's pose this lap; parked inside the planet otherwise.
+    fn place_ghost(&mut self) {
+        let Some(session) = self.ghost.as_ref() else {
+            return;
+        };
+        let pose = session
+            .playing
+            .as_ref()
+            .filter(|_| !self.in_menu && session.lapper.running())
+            .and_then(|g| g.pose(session.lapper.clock()));
+        if pose.is_some() && self.ghost_object.is_none() {
+            let assets = assets_dir();
+            let Some(model) = ghost::write_model(&assets.join("generated")) else {
+                self.ghost = None;
+                return;
+            };
+            let object = blade_engine::config::Object {
+                name: "ghost".to_string(),
+                visuals: vec![blade_engine::config::Visual {
+                    model: relative_model(&assets, &model),
+                    ..Default::default()
+                }],
+                // Visual only: no collider, so nothing can touch it.
+                colliders: Vec::new(),
+                additional_mass: None,
+            };
+            let handle = self.engine.add_object(
+                &object,
+                blade_engine::Transform::default(),
+                blade_engine::DynamicInput::Empty,
+            );
+            let glow = self
+                .engine
+                .create_particle_system("ghost-glow", &ghost::glow_effect());
+            self.ghost_object = Some((handle, glow));
+        }
+        let Some((handle, glow_system)) = self.ghost_object else {
+            return;
+        };
+        if let Some((at, rot, _)) = pose.filter(|_| !self.is_paused) {
+            self.engine
+                .particle_burst(glow_system, 3, (at + rot * glam::Vec3::Z * 0.2).into());
+        }
+        let (position, orientation, boost) =
+            pose.unwrap_or((glam::Vec3::ZERO, glam::Quat::IDENTITY, false));
+        let glow = if boost { 1.6 } else { 1.0 };
+        self.engine.set_color_tint(handle, [glow, glow, glow, 1.0]);
+        self.engine.teleport_object(
+            handle,
+            blade_engine::Transform {
+                position: position.into(),
+                orientation: orientation.into(),
+            },
+        );
+    }
+
     /// One-line pack summary for the end-of-race log.
     pub(crate) fn race_stats_summary(&self) -> String {
         let stats = &self.race_stats;
@@ -1088,6 +1191,20 @@ impl Game {
         let race_done = matches!(self.script, Some(trace::Script::Race)) && self.race.finished;
         timed_out || lap_done || race_done
     }
+}
+
+/// Ghosts for play; scripts only with an explicit `REDLINE_GHOST_DIR` so CI
+/// and repeated scripted runs never pick up a player's saved lap. Never in smoke.
+fn ghost_session(scripted: bool, smoke: bool) -> Option<ghost::Session> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let (explicit, dir) = (
+        env::var_os("REDLINE_GHOST_DIR").is_some(),
+        ghost::default_dir(),
+    );
+    // The web build keeps the ghost for the session only.
+    #[cfg(target_arch = "wasm32")]
+    let (explicit, dir) = (false, None);
+    (!smoke && (!scripted || explicit)).then(|| ghost::Session::new(dir))
 }
 
 /// Start lights run for play and for the scripted race (which practises its

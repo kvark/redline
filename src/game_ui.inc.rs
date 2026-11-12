@@ -1,3 +1,5 @@
+const GHOST_CYAN: egui::Color32 = egui::Color32::from_rgb(110, 220, 255);
+
 impl Game {
     pub fn on_event(
         &mut self,
@@ -183,6 +185,9 @@ impl Game {
                     log::info!("{}", self.frame_summary());
                     log::info!("{}", self.dust_ledger.summary());
                     log::info!("{}", self.audio_cues.summary());
+                    if let Some(session) = self.ghost.as_ref() {
+                        log::info!("{}", session.summary());
+                    }
                     return Err(QuitEvent);
                 }
                 return Ok(if let Some(when) = time::Instant::now().checked_add(wait) {
@@ -207,6 +212,9 @@ impl Game {
         self.vehicle.teleport(&mut self.engine, &self.spawn);
         self.vehicle.reset_boost_stats();
         self.race.reset();
+        if let Some(session) = self.ghost.as_mut() {
+            session.lapper.restart();
+        }
         self.lap_callout = None;
         self.race_results = None;
         for driver in self.ai_drivers.iter_mut() {
@@ -265,6 +273,7 @@ impl Game {
         self.egui_state
             .handle_platform_output(&self.window, egui_output.platform_output);
 
+        self.place_ghost();
         let camera = self.follow_camera();
         self.update_local_lights(glam::Vec3::from(camera.transform.position));
         let primitives = self
@@ -502,6 +511,7 @@ impl Game {
         let last_lap = board.last_lap;
         let launch = board.launch;
         let margin = board.margin();
+        let new_ghost = self.ghost.as_ref().is_some_and(|g| g.saved);
         let rows: Vec<(String, String, bool)> = board
             .standings
             .iter()
@@ -555,6 +565,9 @@ impl Game {
                             }
                             if let Some(rating) = launch {
                                 ui.label(format!("Launch  {}", rating.label()));
+                            }
+                            if new_ghost {
+                                ui.colored_label(GHOST_CYAN, "New ghost saved: race it next");
                             }
                             if !rows.is_empty() {
                                 ui.add_space(8.0);
@@ -685,6 +698,22 @@ impl Game {
                     .strong()
                     .color(color),
             );
+        }
+        if let Some(gap) = self.ghost_split() {
+            let color = if gap < 0.0 {
+                egui::Color32::from_rgb(120, 255, 140)
+            } else {
+                egui::Color32::from_rgb(255, 200, 90)
+            };
+            ui.label(
+                egui::RichText::new(format!("{}  vs ghost", ghost::split_text(gap)))
+                    .size(20.0)
+                    .strong()
+                    .color(color),
+            );
+        }
+        if let Some(lap) = self.ghost.as_ref().and_then(|g| g.playing.as_ref()) {
+            ui.colored_label(GHOST_CYAN, format!("Ghost  {}", format_time(lap.lap_time)));
         }
         ui.label(
             egui::RichText::new(format!(

@@ -71,6 +71,19 @@ default device (`REDLINE_MUTE=1` to silence); the web build plays it through
 Web Audio, which browsers unlock on the first click or key press (`?mute=1` to
 silence). With no device or no working `AudioContext`, the race runs silently.
 
+Best-lap ghost: every line-to-line lap is recorded at 20 Hz (position,
+orientation, boost). When a race finishes, the fastest lap is kept only if it
+beats the saved ghost for that circuit, and the next race replays it as a cyan
+hologram craft (an open emissive lattice plus a faint particle haze; it has no
+collider, so it never touches the physics). The HUD shows `+0.4s vs ghost`
+(behind) or `-0.3s vs ghost` (ahead) and the ghost's lap time. Ghosts are saved
+per circuit to `ghost-<circuit>.ron` in `$REDLINE_GHOST_DIR`, else
+`$XDG_DATA_HOME/redline`, `~/.local/share/redline` or `%APPDATA%\redline`;
+delete that file (e.g. `rm ~/.local/share/redline/ghost-mars-equator.ron`) to
+clear it. Scripted runs and `--smoke` skip ghosts unless `REDLINE_GHOST_DIR` is
+set, so CI never sees a player's saved lap. The web build keeps the ghost for
+the browser session only.
+
 ## Web / WASM
 
 Requires a WebGL2 browser. Assets are embedded at compile time. `.cargo/config.toml`

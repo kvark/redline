@@ -29,6 +29,7 @@ mod countdown;
 mod edge_dust;
 mod game;
 mod gate_pylons;
+mod ghost;
 mod glb;
 mod lap_callout;
 mod launch;
