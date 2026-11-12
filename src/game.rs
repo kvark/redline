@@ -12,6 +12,7 @@ use std::time;
 use web_time as time;
 
 use crate::ai;
+use crate::audio;
 use crate::boost_pad;
 use crate::config;
 use crate::control;
@@ -102,6 +103,10 @@ pub struct Game {
     freeze_at: Option<f32>,
     /// CPU frame times (ms) for the end-of-script perf line.
     frame_ms: Vec<(f32, f32)>,
+    /// Engine / whoosh / start-light sounds; silent without a device.
+    audio: audio::Output,
+    /// Edge detector feeding `audio`; reads race state, never writes it.
+    audio_cues: audio::CueTracker,
 }
 
 pub struct QuitEvent;
@@ -318,6 +323,8 @@ impl Game {
             race_seed: 0,
             freeze_at: cli.freeze_at,
             frame_ms: Vec::new(),
+            audio: audio::Output::start(),
+            audio_cues: audio::CueTracker::new(),
         }
     }
 
@@ -390,6 +397,7 @@ impl Game {
         let lights = wants_lights(self.script, self.smoke_frames_left);
         self.start_countdown = lights.then(countdown::StartCountdown::new);
         self.launch = lights.then(|| launch::Start::new(self.ai_drivers.len(), self.race_seed));
+        self.audio_cues.reset();
         self.window.set_title(&format!(
             "Redline — {} / {}",
             self.menu_vehicle.label(),
@@ -557,9 +565,45 @@ impl Game {
         }
         self.emit_dust(&pose, dt);
         self.emit_edge_dust();
+        self.listen(drive_locked);
         if !drive_locked {
             self.record_sample(&pose, linear, angular, forward_speed, lateral_speed);
         }
+    }
+
+    /// Turn this step's race state into audio cues (read-only for the sim).
+    fn listen(&mut self, drive_locked: bool) {
+        let heard = audio::Heard {
+            countdown: self.start_countdown.as_ref().and_then(|c| c.label()),
+            pad_hits: self.vehicle.pad_hits(),
+            launch: self.launch.as_ref().and_then(|s| s.banner()),
+            rejoin_boost: if drive_locked {
+                0.0
+            } else {
+                self.vehicle.ribbon_boost_intensity()
+            },
+        };
+        let (audio, sim_time) = (&self.audio, self.sim_time);
+        self.audio_cues.observe(&heard, |cue| {
+            log::debug!("audio cue {cue:?} at sim={sim_time:.2}s");
+            audio.send(audio::Command::Play(cue));
+        });
+    }
+
+    /// Engine note for this frame; muted in the menu and while paused.
+    fn update_engine_audio(&self) {
+        let (hz, gain) = if self.in_menu || self.is_paused {
+            (audio::ENGINE_IDLE_HZ, 0.0)
+        } else {
+            let (lin, _) = self.engine.get_velocity(self.vehicle.body_handle);
+            let speed = glam::Vec3::from(lin).length();
+            let boost = self.vehicle.boost_intensity().max(self.launch_thrust());
+            (
+                audio::engine_pitch(speed, boost),
+                audio::engine_gain(speed, self.controller.throttle()),
+            )
+        };
+        self.audio.send(audio::Command::Engine { hz, gain });
     }
 
     /// Launch thrust (or jump-start wheelspin drag) along each craft's heading.

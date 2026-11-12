@@ -17,6 +17,9 @@ compile_error!(
 );
 
 mod ai;
+mod audio;
+#[cfg(not(target_arch = "wasm32"))]
+mod audio_out;
 mod boost_pad;
 mod config;
 mod control;

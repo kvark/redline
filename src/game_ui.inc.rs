@@ -182,6 +182,7 @@ impl Game {
                     log::info!("{}", self.launch_summary());
                     log::info!("{}", self.frame_summary());
                     log::info!("{}", self.dust_ledger.summary());
+                    log::info!("{}", self.audio_cues.summary());
                     return Err(QuitEvent);
                 }
                 return Ok(if let Some(when) = time::Instant::now().checked_add(wait) {
@@ -229,6 +230,7 @@ impl Game {
         sync_web_canvas(&self.window);
         let frame_started = time::Instant::now();
         self.update_time();
+        self.update_engine_audio();
         let sim_ms = frame_started.elapsed().as_secs_f32() * 1e3;
 
         let ui_started = time::Instant::now();
