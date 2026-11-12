@@ -1193,18 +1193,25 @@ impl Game {
     }
 }
 
-/// Ghosts for play; scripts only with an explicit `REDLINE_GHOST_DIR` so CI
-/// and repeated scripted runs never pick up a player's saved lap. Never in smoke.
+/// Ghosts for play; scripts only with an explicit `REDLINE_GHOST_DIR` (web:
+/// `?ghost=1`) so CI and repeated scripted runs never pick up a player's saved
+/// lap. Never in smoke.
 fn ghost_session(scripted: bool, smoke: bool) -> Option<ghost::Session> {
     #[cfg(not(target_arch = "wasm32"))]
-    let (explicit, dir) = (
-        env::var_os("REDLINE_GHOST_DIR").is_some(),
-        ghost::default_dir(),
-    );
-    // The web build keeps the ghost for the session only.
+    let explicit = env::var_os("REDLINE_GHOST_DIR").is_some();
     #[cfg(target_arch = "wasm32")]
-    let (explicit, dir) = (false, None);
-    (!smoke && (!scripted || explicit)).then(|| ghost::Session::new(dir))
+    let explicit = web_sys::window()
+        .and_then(|window| window.location().search().ok())
+        .is_some_and(|search| ghost::web_opt_in(&search));
+    if smoke || (scripted && !explicit) {
+        return None;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let store = ghost::default_dir().map(|dir| ghost::boxed(ghost::DirStore(dir)));
+    // The web build persists in localStorage; without it, the session only.
+    #[cfg(target_arch = "wasm32")]
+    let store = ghost::WebStore::open().map(ghost::boxed);
+    Some(ghost::Session::new(store))
 }
 
 /// Start lights run for play and for the scripted race (which practises its

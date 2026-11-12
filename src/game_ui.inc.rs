@@ -647,6 +647,17 @@ impl Game {
                     }
                     ui.add_space(4.0);
                     ui.label(self.menu_map.blurb());
+                    let circuit = self.menu_map.key();
+                    if let Some(session) = self.ghost.as_mut()
+                        && let Some(lap) = session.stored(circuit)
+                    {
+                        ui.add_space(6.0);
+                        let text = format!("Best-lap ghost  {}", format_time(lap));
+                        ui.colored_label(GHOST_CYAN, text);
+                        if ui.button("Clear Ghost").clicked() {
+                            session.clear(circuit);
+                        }
+                    }
                 });
 
                 ui.add_space(20.0);

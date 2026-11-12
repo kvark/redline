@@ -220,10 +220,151 @@ impl Lapper {
     }
 }
 
+/// Storage key of a circuit's ghost: `ghost-<circuit>` (`.ron` on disk).
+pub fn key(circuit: &str) -> String {
+    format!("ghost-{circuit}")
+}
+
+/// Where ghosts persist: files on native, localStorage on the web. Failures
+/// come back as text so callers can log them and carry on in memory.
+pub trait Store {
+    fn read(&self, key: &str) -> Option<String>;
+    fn write(&mut self, key: &str, text: &str) -> Result<(), String>;
+    /// Removing a missing entry is not an error.
+    fn remove(&mut self, key: &str) -> Result<(), String>;
+    fn describe(&self, key: &str) -> String;
+}
+
+pub fn boxed(store: impl Store + 'static) -> Box<dyn Store> {
+    Box::new(store)
+}
+
+/// `<dir>/ghost-<circuit>.ron`.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct DirStore(pub PathBuf);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DirStore {
+    pub fn path(&self, key: &str) -> PathBuf {
+        self.0.join(format!("{key}.ron"))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Store for DirStore {
+    fn read(&self, key: &str) -> Option<String> {
+        std::fs::read_to_string(self.path(key)).ok()
+    }
+
+    fn write(&mut self, key: &str, text: &str) -> Result<(), String> {
+        std::fs::create_dir_all(&self.0).map_err(|err| err.to_string())?;
+        std::fs::write(self.path(key), text).map_err(|err| err.to_string())
+    }
+
+    fn remove(&mut self, key: &str) -> Result<(), String> {
+        match std::fs::remove_file(self.path(key)) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.to_string()),
+            _ => Ok(()),
+        }
+    }
+
+    fn describe(&self, key: &str) -> String {
+        self.path(key).display().to_string()
+    }
+}
+
+/// `localStorage["redline:ghost-<circuit>"]`; the prefix keeps it apart from
+/// other pages on a shared origin (github.io). Every call can throw (quota,
+/// private mode, storage disabled), so errors are returned, never unwrapped.
+#[cfg(target_arch = "wasm32")]
+pub struct WebStore(web_sys::Storage);
+
+#[cfg(target_arch = "wasm32")]
+impl WebStore {
+    const PREFIX: &str = "redline:";
+
+    /// None when the page has no usable localStorage.
+    pub fn open() -> Option<Self> {
+        match web_sys::window()?.local_storage() {
+            Ok(Some(storage)) => Some(Self(storage)),
+            Ok(None) => None,
+            Err(err) => {
+                log::warn!("ghost: localStorage unavailable ({err:?}); session only");
+                None
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Store for WebStore {
+    fn read(&self, key: &str) -> Option<String> {
+        self.0
+            .get_item(&format!("{}{key}", Self::PREFIX))
+            .ok()
+            .flatten()
+    }
+
+    fn write(&mut self, key: &str, text: &str) -> Result<(), String> {
+        self.0
+            .set_item(&format!("{}{key}", Self::PREFIX), text)
+            .map_err(|err| format!("{err:?}"))
+    }
+
+    fn remove(&mut self, key: &str) -> Result<(), String> {
+        self.0
+            .remove_item(&format!("{}{key}", Self::PREFIX))
+            .map_err(|err| format!("{err:?}"))
+    }
+
+    fn describe(&self, key: &str) -> String {
+        format!("localStorage[{}{key}]", Self::PREFIX)
+    }
+}
+
+/// `?ghost=1` opts a scripted web run into localStorage, like `REDLINE_GHOST_DIR`.
+#[cfg(any(target_arch = "wasm32", test))]
+pub fn web_opt_in(search: &str) -> bool {
+    search
+        .trim_start_matches('?')
+        .split('&')
+        .any(|pair| matches!(pair, "ghost" | "ghost=1"))
+}
+
+/// Compact RON payload (no pretty-printing): ~45 KB for a 20 s lap.
+pub fn encode(ghost: &Ghost) -> Option<String> {
+    ron::to_string(ghost).ok()
+}
+
+/// Parse a stored ghost; anything corrupt, from another format or circuit,
+/// or physically impossible is skipped with a log line, never a panic.
+pub fn decode(text: &str, circuit: &str) -> Option<Ghost> {
+    let ghost: Ghost = ron::from_str(text)
+        .map_err(|err| log::warn!("ignoring ghost for {circuit}: {err}"))
+        .ok()?;
+    let finite = |v: &[f32]| v.iter().all(|x| x.is_finite());
+    let sane = ghost.format == FORMAT
+        && ghost.circuit == circuit
+        && ghost.lap_len.is_finite()
+        && ghost.lap_len > 0.0
+        && ghost.lap_time.is_finite()
+        && ghost.lap_time > 0.0
+        && (2..=MAX_FRAMES).contains(&ghost.frames.len())
+        && ghost
+            .frames
+            .iter()
+            .all(|f| finite(&f.pos) && finite(&f.rot) && f.s.is_finite())
+        && ghost.frames.windows(2).all(|w| w[1].s >= w[0].s);
+    if !sane {
+        log::warn!("ignoring ghost for {circuit}: wrong circuit, format or data");
+    }
+    sane.then_some(ghost)
+}
+
 /// Ghost state for the session: what plays this race and what gets saved.
 pub struct Session {
-    /// Where `ghost-<circuit>.ron` lives; None keeps ghosts in memory only.
-    dir: Option<PathBuf>,
+    /// Where `ghost-<circuit>` persists; None keeps ghosts in memory only.
+    store: Option<Box<dyn Store>>,
     circuit: String,
     /// Fastest known lap on `circuit`: next race's ghost.
     best: Option<Ghost>,
@@ -232,30 +373,48 @@ pub struct Session {
     pub lapper: Lapper,
     /// This race set a new best (and saved it, when persisting).
     pub saved: bool,
+    /// Menu's view of a circuit's stored lap time, so it is not reread every frame.
+    menu_cache: Option<(String, Option<f32>)>,
+    /// Storage failures log one warning per session; the rest go to debug.
+    warned: bool,
 }
 
 impl Session {
-    pub fn new(dir: Option<PathBuf>) -> Self {
+    pub fn new(store: Option<Box<dyn Store>>) -> Self {
         Self {
-            dir,
+            store,
             circuit: String::new(),
             best: None,
             playing: None,
             lapper: Lapper::default(),
             saved: false,
+            menu_cache: None,
+            warned: false,
         }
     }
 
-    pub fn path(&self) -> Option<PathBuf> {
-        let dir = self.dir.as_ref()?;
-        Some(dir.join(format!("ghost-{}.ron", self.circuit)))
+    fn warn(&mut self, what: &str, err: &str) {
+        let place = self
+            .store
+            .as_ref()
+            .map_or_else(String::new, |s| s.describe(&key(&self.circuit)));
+        if std::mem::replace(&mut self.warned, true) {
+            log::debug!("ghost {what} {place}: {err}");
+        } else {
+            log::warn!("ghost {what} {place}: {err}; keeping it in memory");
+        }
+    }
+
+    fn read(&self, circuit: &str) -> Option<Ghost> {
+        let text = self.store.as_ref()?.read(&key(circuit))?;
+        decode(&text, circuit)
     }
 
     /// New race on `circuit`: play the best lap so far, record a fresh one.
     pub fn begin(&mut self, circuit: &str, lap_len: f32) {
         if self.circuit != circuit {
             self.circuit = circuit.to_string();
-            self.best = self.path().and_then(|p| load(&p));
+            self.best = self.read(circuit);
         }
         let fits = |g: &Ghost| g.circuit == circuit && (g.lap_len - lap_len).abs() < 1.0;
         self.best = self.best.take().filter(fits);
@@ -265,6 +424,7 @@ impl Session {
     }
 
     /// Offer this race's best lap; saved only when it beats the stored ghost.
+    /// A failed write keeps the new best in memory for the session.
     pub fn commit(&mut self) -> bool {
         let Some(lap) = self.lapper.best.take() else {
             return false;
@@ -272,14 +432,57 @@ impl Session {
         if !keep_faster(&mut self.best, lap) {
             return false;
         }
-        if let (Some(path), Some(best)) = (self.path(), self.best.as_ref()) {
-            match save(&path, best) {
-                Ok(()) => log::info!("ghost saved {:.2}s to {}", best.lap_time, path.display()),
-                Err(err) => log::warn!("ghost not saved to {}: {err}", path.display()),
-            }
-        }
         self.saved = true;
+        self.menu_cache = None;
+        let (Some(best), Some(store)) = (self.best.as_ref(), self.store.as_mut()) else {
+            return true;
+        };
+        let k = key(&self.circuit);
+        let result = encode(best)
+            .ok_or_else(|| "encode failed".to_string())
+            .and_then(|text| store.write(&k, &text));
+        match result {
+            Ok(()) => log::info!(
+                "ghost saved {:.2}s to {}",
+                best.lap_time,
+                store.describe(&k)
+            ),
+            Err(err) => self.warn("not saved to", &err),
+        }
         true
+    }
+
+    /// Lap time of the ghost the menu offers to clear on `circuit`, if any.
+    pub fn stored(&mut self, circuit: &str) -> Option<f32> {
+        if circuit == self.circuit
+            && let Some(best) = self.best.as_ref()
+        {
+            return Some(best.lap_time);
+        }
+        if let Some(&(ref cached, lap)) = self.menu_cache.as_ref()
+            && cached == circuit
+        {
+            return lap;
+        }
+        let lap = self.read(circuit).map(|g| g.lap_time);
+        self.menu_cache = Some((circuit.to_string(), lap));
+        lap
+    }
+
+    /// Menu "Clear Ghost": forget `circuit`'s ghost in storage and in memory,
+    /// so its next race starts without one. Other circuits are untouched.
+    pub fn clear(&mut self, circuit: &str) {
+        if let Some(Err(err)) = self.store.as_mut().map(|s| s.remove(&key(circuit))) {
+            self.warn("not removed from", &err);
+        }
+        if circuit == self.circuit {
+            self.best = None;
+            self.playing = None;
+            self.lapper.best = None;
+            self.saved = false;
+        }
+        self.menu_cache = Some((circuit.to_string(), None));
+        log::info!("ghost cleared for {circuit}");
     }
 
     pub fn summary(&self) -> String {
@@ -290,46 +493,15 @@ impl Session {
             secs(self.best.as_ref()),
             self.lapper.laps,
             self.saved,
-            self.path()
-                .map_or("-".to_string(), |p| p.display().to_string()),
+            self.store
+                .as_ref()
+                .map_or("-".to_string(), |s| s.describe(&key(&self.circuit))),
         )
     }
 }
 
-pub fn load(path: &Path) -> Option<Ghost> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = path;
-        None
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let text = std::fs::read_to_string(path).ok()?;
-        let ghost: Ghost = ron::from_str(&text)
-            .map_err(|err| log::warn!("ignoring ghost {}: {err}", path.display()))
-            .ok()?;
-        (ghost.format == FORMAT).then_some(ghost)
-    }
-}
-
-pub fn save(path: &Path, ghost: &Ghost) -> std::io::Result<()> {
-    let text = ron::to_string(ghost).map_err(std::io::Error::other)?;
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (path, text);
-        Ok(())
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, text)
-    }
-}
-
 /// `REDLINE_GHOST_DIR`, else `$XDG_DATA_HOME/redline`, `~/.local/share/redline`
-/// or `%APPDATA%\redline`. Delete `ghost-<circuit>.ron` there to clear a ghost.
+/// or `%APPDATA%\redline`. The menu's Clear Ghost deletes `ghost-<circuit>.ron`.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn default_dir() -> Option<PathBuf> {
     use std::env::var_os;
@@ -517,30 +689,230 @@ mod tests {
         assert_eq!(empty, Some(fast));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn session_saves_per_circuit_and_keeps_the_faster_file() {
         let dir = std::env::temp_dir().join(format!("redline-ghost-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut session = Session::new(Some(dir.clone()));
+        let files = || Some(boxed(DirStore(dir.clone())));
+        let mut session = Session::new(files());
         session.begin("test", LEN);
         assert!(session.playing.is_none());
         session.lapper.best = Some(ghost(25.0));
         assert!(session.commit());
         let path = dir.join("ghost-test.ron");
-        let saved = load(&path).expect("saved ghost");
+        let load = || decode(&std::fs::read_to_string(&path).ok()?, "test");
+        let saved = load().expect("saved ghost");
         // A slower race leaves the file alone.
-        let mut next = Session::new(Some(dir.clone()));
+        let mut next = Session::new(files());
         next.begin("test", LEN);
         assert_eq!(next.playing.as_ref(), Some(&saved));
         next.lapper.best = Some(ghost(20.0));
         assert!(!next.commit());
-        assert_eq!(load(&path), Some(saved));
+        assert_eq!(load(), Some(saved));
         // Other circuits, or a changed lap length, do not play this ghost.
         next.begin("other", LEN);
         assert!(next.playing.is_none());
         next.begin("test", LEN * 2.0);
         assert!(next.playing.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_clear_deletes_the_file_and_the_hologram() {
+        let dir = std::env::temp_dir().join(format!("redline-ghost-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut session = Session::new(Some(Box::new(DirStore(dir.clone()))));
+        session.begin("test", LEN);
+        session.lapper.best = Some(ghost(25.0));
+        assert!(session.commit());
+        session.begin("test", LEN);
+        assert!(session.playing.is_some());
+        assert!(session.stored("test").is_some());
+        let path = dir.join("ghost-test.ron");
+        assert!(path.exists());
+        session.clear("test");
+        assert!(!path.exists());
+        assert!(session.playing.is_none());
+        assert_eq!(session.stored("test"), None);
+        // Clearing again (no file) is fine; the next race has no ghost.
+        session.clear("test");
+        session.begin("test", LEN);
+        assert!(session.playing.is_none());
+        let mut fresh = Session::new(Some(Box::new(DirStore(dir.clone()))));
+        fresh.begin("test", LEN);
+        assert!(fresh.playing.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn on(circuit: &str, speed: f32) -> Ghost {
+        Ghost {
+            circuit: circuit.to_string(),
+            ..ghost(speed)
+        }
+    }
+
+    /// localStorage stand-in: shared map, optionally full (quota) or throwing.
+    #[derive(Clone, Default)]
+    struct FakeStorage {
+        items: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, String>>>,
+        quota: Option<usize>,
+        throws: bool,
+    }
+
+    impl Store for FakeStorage {
+        fn read(&self, key: &str) -> Option<String> {
+            if self.throws {
+                return None;
+            }
+            self.items.borrow().get(key).cloned()
+        }
+        fn write(&mut self, key: &str, text: &str) -> Result<(), String> {
+            if self.throws || self.quota.is_some_and(|q| text.len() > q) {
+                return Err("QuotaExceededError".to_string());
+            }
+            self.items.borrow_mut().insert(key.into(), text.into());
+            Ok(())
+        }
+        fn remove(&mut self, key: &str) -> Result<(), String> {
+            if self.throws {
+                return Err("SecurityError".to_string());
+            }
+            self.items.borrow_mut().remove(key);
+            Ok(())
+        }
+        fn describe(&self, key: &str) -> String {
+            format!("fake[{key}]")
+        }
+    }
+
+    fn web(storage: &FakeStorage) -> Session {
+        Session::new(Some(Box::new(storage.clone())))
+    }
+
+    #[test]
+    fn web_ghost_survives_a_reload_and_only_faster_replaces_it() {
+        let storage = FakeStorage::default();
+        let mut tab = web(&storage);
+        tab.begin("mars", LEN);
+        tab.lapper.best = Some(on("mars", 20.0));
+        assert!(tab.commit());
+        assert!(storage.items.borrow().contains_key("ghost-mars"));
+        // "Reload": a new session over the same storage plays the saved lap.
+        let mut reload = web(&storage);
+        reload.begin("mars", LEN);
+        let first = reload.playing.clone().expect("ghost after reload");
+        assert!((first.lap_time - 5.0).abs() < 0.02);
+        reload.lapper.best = Some(on("mars", 16.0));
+        assert!(!reload.commit());
+        reload.lapper.best = Some(on("mars", 25.0));
+        assert!(reload.commit());
+        let mut again = web(&storage);
+        again.begin("mars", LEN);
+        assert!((again.playing.unwrap().lap_time - 4.0).abs() < 0.02);
+        // Compact enough for localStorage: well under 100 KB for a 5 s lap.
+        assert!(storage.items.borrow()["ghost-mars"].len() < 20_000);
+    }
+
+    #[test]
+    fn web_skips_other_circuits_and_bad_payloads() {
+        let storage = FakeStorage::default();
+        let mut tab = web(&storage);
+        tab.begin("mars", LEN);
+        tab.lapper.best = Some(on("mars", 20.0));
+        tab.commit();
+        let good = storage.items.borrow()["ghost-mars"].clone();
+        let put = |text: &str| {
+            storage
+                .items
+                .borrow_mut()
+                .insert("ghost-mars".into(), text.into());
+            let mut s = web(&storage);
+            s.begin("mars", LEN);
+            s.playing
+        };
+        assert!(put(&good).is_some());
+        // A ghost recorded on another circuit, under this circuit's key.
+        assert!(put(&good.replace("\"mars\"", "\"phobos\"")).is_none());
+        assert!(put(&good.replace("format:1", "format:9")).is_none());
+        assert!(put(&good[..good.len() / 2]).is_none());
+        assert!(put("").is_none());
+        assert!(put("{\"not\":\"ron\"}").is_none());
+        assert!(put(&good.replacen("lap_time:", "lap_time:NaN,x:", 1)).is_none());
+        assert!(put(&good.replacen("pos:(", "pos:(inf,", 1)).is_none());
+        // Same circuit, different lap length: kept on disk but not played.
+        let mut longer = web(&storage);
+        storage
+            .items
+            .borrow_mut()
+            .insert("ghost-mars".into(), good.clone());
+        longer.begin("mars", LEN * 1.5);
+        assert!(longer.playing.is_none());
+        // Another circuit never picks up this circuit's entry.
+        let mut other = web(&storage);
+        other.begin("phobos", LEN);
+        assert!(other.playing.is_none());
+    }
+
+    #[test]
+    fn web_clear_ghost_removes_storage_and_memory_for_one_circuit() {
+        let storage = FakeStorage::default();
+        let mut tab = web(&storage);
+        for circuit in ["mars", "phobos"] {
+            tab.begin(circuit, LEN);
+            tab.lapper.best = Some(on(circuit, 20.0));
+            tab.commit();
+        }
+        tab.begin("mars", LEN);
+        assert!(tab.playing.is_some());
+        assert!(tab.stored("phobos").is_some());
+        tab.clear("mars");
+        assert!(tab.playing.is_none());
+        assert_eq!(tab.stored("mars"), None);
+        assert!(!storage.items.borrow().contains_key("ghost-mars"));
+        assert!(storage.items.borrow().contains_key("ghost-phobos"));
+        tab.begin("mars", LEN);
+        assert!(tab.playing.is_none());
+        let mut reload = web(&storage);
+        reload.begin("mars", LEN);
+        assert!(reload.playing.is_none());
+        reload.begin("phobos", LEN);
+        assert!(reload.playing.is_some());
+    }
+
+    #[test]
+    fn web_storage_failures_keep_the_session_ghost() {
+        for storage in [
+            FakeStorage {
+                quota: Some(100),
+                ..FakeStorage::default()
+            },
+            FakeStorage {
+                throws: true,
+                ..FakeStorage::default()
+            },
+        ] {
+            let mut tab = web(&storage);
+            tab.begin("mars", LEN);
+            tab.lapper.best = Some(on("mars", 20.0));
+            assert!(tab.commit());
+            assert!(storage.items.borrow().is_empty());
+            tab.begin("mars", LEN);
+            assert!(tab.playing.is_some(), "in-memory ghost for the session");
+            assert!(tab.stored("mars").is_some());
+            tab.clear("mars");
+            assert!(tab.playing.is_none());
+        }
+    }
+
+    #[test]
+    fn ghost_query_opts_scripted_web_runs_in() {
+        assert!(web_opt_in("?script=race&ghost=1"));
+        assert!(web_opt_in("?ghost"));
+        assert!(!web_opt_in("?script=race&ghost=0"));
+        assert!(!web_opt_in("?ghosts=1"));
+        assert!(!web_opt_in(""));
     }
 
     #[test]
