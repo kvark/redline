@@ -1587,6 +1587,7 @@ fn populate_world(
 
     let mut world_handles = Vec::new();
     let planet_rel = relative_model(assets, &planet.planet_model);
+    let collider_rel = relative_model(assets, &planet.collider_model);
     let planet_object = blade_engine::config::Object {
         name: "mars".to_string(),
         visuals: vec![blade_engine::config::Visual {
@@ -1598,7 +1599,7 @@ fn populate_world(
             friction: 0.85,
             restitution: 0.02,
             shape: blade_engine::config::Shape::TriMesh {
-                model: planet_rel,
+                model: collider_rel,
                 convex: false,
                 border_radius: 0.0,
             },
