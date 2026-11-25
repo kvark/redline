@@ -33,6 +33,9 @@ pub struct GeneratedPlanet {
     pub track_width: f32,
     pub track: Vec<TrackSample>,
     pub planet_model: PathBuf,
+    /// The unsliced surface the physics collides with (the visual model is
+    /// cut into strata bands, which must not perturb contacts).
+    pub collider_model: PathBuf,
     pub decorations: Vec<Decoration>,
 }
 
@@ -72,7 +75,14 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
     let mut basalt = MeshBuilder::new("basalt-highlands");
     let mut iron = MeshBuilder::new("iron-outcrops");
     let mut track_mesh = MeshBuilder::new("mars-track");
-    for face in faces.iter() {
+    let mut strata = strata_builders("mesa-strata");
+    let mut strata_low = strata_builders("canyon-floor");
+    let height = |p: glam::Vec3| p.length() - config.radius;
+    // Ribbon grit: each facet takes one of a few close tan tones.
+    let mut grit: Vec<MeshBuilder> = (0..GRIT.len())
+        .map(|i| MeshBuilder::new(&format!("track-grit-{i}")))
+        .collect();
+    for (face_index, face) in faces.iter().enumerate() {
         let a = displaced[face[0] as usize];
         let b = displaced[face[1] as usize];
         let c = displaced[face[2] as usize];
@@ -82,6 +92,8 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
             >= 2;
         if trackish {
             track_mesh.push_triangle(a, b, c, config.radius);
+            let tone = hash_u32(face_index as u32 ^ config.seed) as usize % GRIT.len();
+            grit[tone].push_triangle(a, b, c, config.radius);
         } else {
             let center = (a + b + c) / 3.0;
             let relative_height = (center.length() - config.radius) / config.height_amp;
@@ -91,17 +103,21 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
             );
             if relative_height < -0.16 {
                 lowlands.push_triangle(a, b, c, config.radius);
+                push_strata(&mut strata_low, [a, b, c], height, STRATA_BAND, config.seed);
             } else if relative_height > 0.48 {
                 basalt.push_triangle(a, b, c, config.radius);
+                push_strata(&mut strata, [a, b, c], height, STRATA_BAND, config.seed);
             } else if material_noise > 0.68 {
                 iron.push_triangle(a, b, c, config.radius);
             } else {
                 dust.push_triangle(a, b, c, config.radius);
+                push_strata(&mut strata, [a, b, c], height, STRATA_BAND, config.seed);
             }
         }
     }
 
     let planet_model = out_dir.join("mars.glb");
+    let collider_model = out_dir.join("mars-collider.glb");
     let mut surface_meshes = Vec::new();
     for (mesh, look) in [
         (dust, ([0.52, 0.26, 0.13, 1.0], 0.0, 0.96)),
@@ -114,7 +130,24 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
             surface_meshes.push(mesh.finish(look.0, look.1, look.2, [0.0; 3]));
         }
     }
-    glb::write_glb(&planet_model, &surface_meshes).expect("failed to write planet glb");
+    glb::write_glb(&collider_model, &surface_meshes).expect("failed to write planet collider");
+    // Red Canyon look: layered strata bands in place of the flat dust and
+    // highland fills, a darker canyon floor; iron outcrops and the ribbon stay.
+    let mut visual_meshes = finish_strata(strata, 1.0);
+    visual_meshes.extend(finish_strata(strata_low, 0.62));
+    for (builder, shade) in grit.into_iter().zip(GRIT) {
+        if !builder.is_empty() {
+            let c = [0.36 * shade, 0.17 * shade, 0.10 * shade, 1.0];
+            visual_meshes.push(builder.finish(c, 0.0, 0.82, [0.0; 3]));
+        }
+    }
+    let keep = ["iron-outcrops"];
+    visual_meshes.extend(
+        surface_meshes
+            .into_iter()
+            .filter(|m| keep.contains(&m.name.as_str())),
+    );
+    glb::write_glb(&planet_model, &visual_meshes).expect("failed to write planet glb");
 
     let stone_models = write_stone_models(out_dir, config.seed);
     let spire_models = write_spire_models(out_dir, config.seed);
@@ -132,6 +165,7 @@ pub fn generate(config: config::Planet, out_dir: &Path) -> GeneratedPlanet {
         track_width: config.track_width,
         track,
         planet_model,
+        collider_model,
         decorations,
     }
 }
@@ -430,46 +464,31 @@ fn crystal_collider(scale: f32) -> Vec<glam::Vec3> {
 }
 
 fn write_stone_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
-    let colors = [
-        [0.18, 0.12, 0.11, 1.0],
-        [0.095, 0.085, 0.09, 1.0],
-        [0.28, 0.12, 0.075, 1.0],
-    ];
-    colors
+    // Strata shades: each rock set reads a little darker or lighter.
+    [0.8, 0.6, 0.92]
         .iter()
         .enumerate()
-        .map(|(i, color)| {
+        .map(|(i, shade)| {
             let path = out_dir.join(format!("stone-{i}.glb"));
-            let mesh = elongated_rock(
-                seed.wrapping_add((i as u32).wrapping_mul(17)),
-                *color,
-                false,
-                1.0,
-            );
-            glb::write_glb(&path, &[mesh]).expect("stone glb");
+            let mesh = elongated_rock(seed.wrapping_add((i as u32).wrapping_mul(17)), *shade, 1.0);
+            glb::write_glb(&path, &mesh).expect("stone glb");
             path
         })
         .collect()
 }
 
 fn write_spire_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
-    let colors = [
-        [0.105, 0.085, 0.082, 1.0],
-        [0.16, 0.075, 0.055, 1.0],
-        [0.075, 0.072, 0.078, 1.0],
-    ];
-    colors
+    [0.72, 0.88, 0.62]
         .iter()
         .enumerate()
-        .map(|(i, color)| {
+        .map(|(i, shade)| {
             let path = out_dir.join(format!("spire-{i}.glb"));
             let mesh = elongated_rock(
                 seed.wrapping_add(0x5A11).wrapping_add((i as u32) * 43),
-                *color,
-                false,
+                *shade,
                 0.34,
             );
-            glb::write_glb(&path, &[mesh]).expect("spire glb");
+            glb::write_glb(&path, &mesh).expect("spire glb");
             path
         })
         .collect()
@@ -493,10 +512,10 @@ fn write_crystal_models(out_dir: &Path, seed: u32) -> Vec<PathBuf> {
         .collect()
 }
 
-fn elongated_rock(seed: u32, color: [f32; 4], crystal: bool, width: f32) -> glb::MeshData {
+fn elongated_rock(seed: u32, shade: f32, width: f32) -> Vec<glb::MeshData> {
     let (verts, faces) = icosphere(1);
-    let stretch = if crystal { 2.6 } else { 2.1 };
-    let mut builder = MeshBuilder::new("rock");
+    let stretch = 2.1;
+    let mut strata = strata_builders("rock");
     let jitter = seed_offset(seed);
     for face in faces.iter() {
         let mut tri = [glam::Vec3::ZERO; 3];
@@ -510,12 +529,87 @@ fn elongated_rock(seed: u32, color: [f32; 4], crystal: bool, width: f32) -> glb:
             p.y *= 1.15;
             tri[k] = p;
         }
-        builder.push_triangle(tri[0], tri[1], tri[2], 1.0);
+        // Mesa-like layering: thin bands up the rock's local height.
+        push_strata(&mut strata, tri, |p| p.y, 0.3, seed);
     }
-    if crystal {
-        builder.finish(color, 0.15, 0.22, [color[0], color[1], color[2]])
-    } else {
-        builder.finish(color, 0.04, 0.95, [0.0; 3])
+    finish_strata(strata, shade)
+}
+
+/// Red Canyon strata (sRGB), dark seam to pale caprock.
+const STRATA: [[u8; 3]; 6] = [
+    [104, 40, 26],
+    [138, 52, 30],
+    [184, 78, 40],
+    [206, 104, 52],
+    [218, 148, 88],
+    [230, 172, 110],
+];
+/// Track tone shades around the stock ribbon color.
+const GRIT: [f32; 4] = [0.84, 0.95, 1.05, 1.2];
+/// Meters of planet relief per terrain stratum.
+const STRATA_BAND: f32 = 0.6;
+
+fn strata_builders(name: &str) -> Vec<MeshBuilder> {
+    (0..STRATA.len())
+        .map(|i| MeshBuilder::new(&format!("{name}-{i}")))
+        .collect()
+}
+
+fn finish_strata(builders: Vec<MeshBuilder>, shade: f32) -> Vec<glb::MeshData> {
+    builders
+        .into_iter()
+        .zip(STRATA)
+        .filter(|&(ref b, _)| !b.is_empty())
+        .map(|(b, rgb)| {
+            let c = glb::srgb_to_linear(rgb.map(|v| (v as f32 * shade) as u8));
+            b.finish(c, 0.0, 0.94, [0.0; 3])
+        })
+        .collect()
+}
+
+/// Slice `tri` into horizontal bands `band` thick along `height`, adding each
+/// slice to the builder of its band's strata color.
+fn push_strata(
+    builders: &mut [MeshBuilder],
+    tri: [glam::Vec3; 3],
+    height: impl Fn(glam::Vec3) -> f32,
+    band: f32,
+    seed: u32,
+) {
+    let h = tri.map(&height);
+    let lo = (h.iter().copied().fold(f32::MAX, f32::min) / band).floor() as i32;
+    let hi = (h.iter().copied().fold(f32::MIN, f32::max) / band).floor() as i32;
+    for k in lo..=hi {
+        let mut poly: Vec<(glam::Vec3, f32)> = tri.into_iter().zip(h).collect();
+        for (limit, sign) in [(k as f32 * band, 1.0), ((k + 1) as f32 * band, -1.0)] {
+            let mut out = Vec::with_capacity(poly.len() + 1);
+            for (i, &(p, hp)) in poly.iter().enumerate() {
+                let (q, hq) = poly[(i + 1) % poly.len()];
+                let (sp, sq) = ((hp - limit) * sign, (hq - limit) * sign);
+                if sp >= 0.0 {
+                    out.push((p, hp));
+                }
+                if (sp >= 0.0) != (sq >= 0.0) {
+                    let t = sp / (sp - sq);
+                    out.push((p.lerp(q, t), hp + (hq - hp) * t));
+                }
+            }
+            poly = out;
+        }
+        if poly.len() < 3 {
+            continue;
+        }
+        // Slow swells of tone with the odd hashed seam, like stacked beds.
+        let swell = 2.6 + 2.2 * (k as f32 * 0.55 + (seed % 97) as f32).sin();
+        let jitter = (hash_u32((k as u32).wrapping_mul(0x9E37) ^ seed) % 3) as f32 - 1.0;
+        let color = (swell + jitter).round().clamp(0.0, 5.0) as usize;
+        for i in 1..poly.len() - 1 {
+            let (a, b, c) = (poly[0].0, poly[i].0, poly[i + 1].0);
+            // Slivers on a band edge have no normal; Blade rejects those.
+            if (b - a).cross(c - a).length_squared() > 1e-10 {
+                builders[color].push_triangle(a, b, c, 0.0);
+            }
+        }
     }
 }
 

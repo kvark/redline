@@ -52,6 +52,19 @@ fn min_max2(values: &[[f32; 2]]) -> ([f32; 2], [f32; 2]) {
     (min, max)
 }
 
+/// sRGB 8-bit color to a linear `baseColorFactor`.
+pub fn srgb_to_linear(c: [u8; 3]) -> [f32; 4] {
+    let f = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    [f(c[0]), f(c[1]), f(c[2]), 1.0]
+}
+
 /// Encode a GLB with one node per mesh. The first scene owns every node.
 pub fn encode_glb(meshes: &[MeshData]) -> io::Result<Vec<u8>> {
     assert!(!meshes.is_empty(), "need at least one mesh");
