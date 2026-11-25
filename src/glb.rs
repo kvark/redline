@@ -3,6 +3,7 @@ use std::fs;
 use std::{io, path::Path};
 
 /// One triangle mesh with a texture-less PBR material.
+#[derive(Default)]
 pub struct MeshData {
     pub name: String,
     pub positions: Vec<[f32; 3]>,
@@ -254,6 +255,105 @@ pub fn write_glb(path: &Path, meshes: &[MeshData]) -> io::Result<()> {
         }
         fs::write(path, out)
     }
+}
+
+/// One mesh primitive of a GLB, flattened into model space.
+pub struct Primitive {
+    pub positions: Vec<glam::Vec3>,
+    pub normals: Vec<glam::Vec3>,
+    pub uvs: Vec<[f32; 2]>,
+    pub indices: Vec<u32>,
+    pub material: serde_json::Value,
+}
+
+/// Flatten every mesh primitive of a GLB's default scene into model space.
+pub fn read_glb(bytes: &[u8]) -> Option<Vec<Primitive>> {
+    use glam::{Affine3A, Quat, Vec3};
+    let json_len = u32::from_le_bytes(bytes.get(12..16)?.try_into().ok()?) as usize;
+    let json: serde_json::Value = serde_json::from_slice(bytes.get(20..20 + json_len)?).ok()?;
+    let bin = bytes.get(28 + json_len..)?;
+    let at = |key: &str, index: &serde_json::Value| index.as_u64().map(|i| &json[key][i as usize]);
+    // Accessor `index` as flat f32 components (u8/u16/u32/f32 sources).
+    let read = |index: &serde_json::Value, width: usize| -> Option<Vec<f32>> {
+        let accessor = at("accessors", index)?;
+        let view = at("bufferViews", &accessor["bufferView"])?;
+        let offset = |v: &serde_json::Value| v["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let kind = accessor["componentType"].as_u64()?;
+        let size = match kind {
+            5121 => 1,
+            5123 => 2,
+            _ => 4,
+        };
+        let stride = view["byteStride"]
+            .as_u64()
+            .map_or(size * width, |s| s as usize);
+        let base = offset(view) + offset(accessor);
+        (0..accessor["count"].as_u64()? as usize * width)
+            .map(|c| {
+                let at = base + c / width * stride + c % width * size;
+                let raw = bin.get(at..at + size)?;
+                Some(match kind {
+                    5121 => raw[0] as f32,
+                    5123 => u16::from_le_bytes([raw[0], raw[1]]) as f32,
+                    5125 => u32::from_le_bytes(raw.try_into().ok()?) as f32,
+                    _ => f32::from_le_bytes(raw.try_into().ok()?),
+                })
+            })
+            .collect()
+    };
+    let vec3s = |v: Vec<f32>| v.chunks(3).map(Vec3::from_slice).collect::<Vec<_>>();
+    let roots = json["scenes"][0]["nodes"].as_array()?.iter();
+    let mut stack: Vec<_> = roots.map(|n| (n, Affine3A::IDENTITY)).collect();
+    let mut prims = Vec::new();
+    while let Some((index, parent)) = stack.pop() {
+        let node = at("nodes", index)?;
+        let get = |key: &str, mut out: [f32; 4]| {
+            let values = node[key].as_array().into_iter().flatten();
+            values
+                .zip(&mut out)
+                .for_each(|(v, o)| *o = v.as_f64().unwrap_or(0.0) as f32);
+            out
+        };
+        let (t, s) = (get("translation", [0.0; 4]), get("scale", [1.0; 4]));
+        let r = Quat::from_array(get("rotation", [0.0, 0.0, 0.0, 1.0]));
+        let local = Affine3A::from_scale_rotation_translation(
+            Vec3::from_slice(&s),
+            r,
+            Vec3::from_slice(&t),
+        );
+        let world = parent * local;
+        let children = node["children"].as_array().into_iter().flatten();
+        stack.extend(children.map(|c| (c, world)));
+        let Some(mesh) = at("meshes", &node["mesh"]) else {
+            continue;
+        };
+        for primitive in mesh["primitives"].as_array()? {
+            let attr = &primitive["attributes"];
+            let positions = vec3s(read(&attr["POSITION"], 3)?);
+            let normals = vec3s(read(&attr["NORMAL"], 3)?);
+            let uvs =
+                read(&attr["TEXCOORD_0"], 2).unwrap_or_else(|| vec![0.0; positions.len() * 2]);
+            let indices = match read(&primitive["indices"], 1) {
+                Some(i) => i.into_iter().map(|i| i as u32).collect(),
+                None => (0..positions.len() as u32).collect(),
+            };
+            let material = at("materials", &primitive["material"]);
+            prims.push(Primitive {
+                positions: positions
+                    .into_iter()
+                    .map(|p| world.transform_point3(p))
+                    .collect(),
+                normals: normals
+                    .into_iter()
+                    .map(|n| world.transform_vector3(n).normalize_or_zero())
+                    .collect(),
+                uvs: uvs.chunks(2).map(|uv| [uv[0], uv[1]]).collect(),
+                indices,
+                material: material.cloned().unwrap_or_default(),
+            });
+        }
+    }
+    Some(prims)
 }
 
 #[cfg(test)]

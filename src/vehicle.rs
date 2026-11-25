@@ -124,6 +124,7 @@ pub fn spawn(
     veh_config: &config::Vehicle,
     pose: Isometry,
     kit: Option<Kit>,
+    livery: Option<String>,
 ) -> Vehicle {
     let drive_factor = match kit {
         Some(kit) => veh_config.drive_factor * kit.drive_factor_scale,
@@ -168,9 +169,16 @@ pub fn spawn(
         wheel_collider.friction *= kit.wheel_friction_scale;
         body_collider.friction *= kit.wheel_friction_scale;
     }
+    // A team livery is a decal shell over the body (same pose) carrying its
+    // own colors, so the kit tint is dropped for it. Visual only.
+    let tint = kit.map(|kit| kit.tint).filter(|_| livery.is_none());
+    let livery_visual = livery.map(|model| blade_engine::config::Visual {
+        model,
+        ..clone_visual(&body_visual)
+    });
     let body_config = blade_engine::config::Object {
         name: "vehicle/body".to_string(),
-        visuals: vec![body_visual],
+        visuals: [body_visual].into_iter().chain(livery_visual).collect(),
         colliders: vec![body_collider],
         additional_mass: None,
     };
@@ -180,8 +188,8 @@ pub fn spawn(
         blade_engine::DynamicInput::Full,
     );
     engine.set_ccd_enabled(body_handle, true);
-    if let Some(kit) = kit {
-        engine.set_color_tint(body_handle, kit.tint);
+    if let Some(tint) = tint {
+        engine.set_color_tint(body_handle, tint);
     }
 
     let wheel_radius = shape_radius(&wheel_collider.shape).unwrap_or(0.28);
