@@ -1,5 +1,5 @@
-//! Equirect Mars sky for the environment map: a dusty butterscotch dome that
-//! sinks to rose and mauve away from the sun, plus Phobos and Deimos.
+//! Equirect Mars sky for the environment map: a bold butterscotch dome that
+//! sinks to dusky rust away from the sun, plus Phobos and Deimos.
 //! Baked once on the CPU into the existing env-map path, so no new shader,
 //! blend mode or texture format reaches WebGL2.
 
@@ -18,11 +18,45 @@ const DEIMOS_RADIUS: f32 = SUN_CORE * 0.15;
 pub const PHOBOS_DIR: glam::Vec3 = glam::Vec3::new(0.844, 0.03, -0.535);
 pub const DEIMOS_DIR: glam::Vec3 = glam::Vec3::new(0.643, 0.503, -0.577);
 
-/// Sky stops: anti-sun dusty rose, mid apricot, bright butterscotch around
-/// the sun (pushed toward a Red Canyon midday).
-const FAR: glam::Vec3 = glam::Vec3::new(120.0, 52.0, 24.0);
-const MID: glam::Vec3 = glam::Vec3::new(255.0, 128.0, 34.0);
-const NEAR: glam::Vec3 = glam::Vec3::new(255.0, 178.0, 72.0);
+/// Sky stops as on-screen sRGB: dusky rust away from the sun, bold
+/// butterscotch across the dome, pale gold around the sun (Red Canyon).
+const FAR: glam::Vec3 = glam::Vec3::new(136.0, 68.0, 32.0);
+const MID: glam::Vec3 = glam::Vec3::new(188.0, 118.0, 40.0);
+const NEAR: glam::Vec3 = glam::Vec3::new(188.0, 146.0, 66.0);
+
+/// Blade's raster sky shows an `Rgba8Unorm` env texel `v` (linear) as
+/// `srgb(v / (v + 1))`, a fixed Reinhard, so the brightest texel only reaches
+/// half of linear white (~188 sRGB) and baked sRGB-looking bytes wash out.
+/// `texel` bakes an on-screen sRGB target through the inverse of that;
+/// `shown` is the forward map.
+fn texel(screen: glam::Vec3) -> [u8; 4] {
+    let c = screen.to_array().map(|v| {
+        let l = srgb_to_linear(v / 255.0).min(0.5);
+        (l / (1.0 - l) * 255.0).round().clamp(0.0, 255.0) as u8
+    });
+    [c[0], c[1], c[2], 255]
+}
+
+fn shown(bytes: glam::Vec3) -> glam::Vec3 {
+    let l = bytes / 255.0;
+    glam::Vec3::from_array((l / (l + 1.0)).to_array().map(linear_to_srgb)) * 255.0
+}
+
+fn srgb_to_linear(v: f32) -> f32 {
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(v: f32) -> f32 {
+    if v <= 0.0031308 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
+}
 
 /// Inverse of Blade's raster `map_equirect_dir_to_uv`.
 fn texel_dir(x: u32, y: u32, width: u32, height: u32) -> glam::Vec3 {
@@ -98,12 +132,14 @@ pub fn sky(width: u32, height: u32) -> Vec<[u8; 4]> {
                 (PHOBOS_DIR, PHOBOS_RADIUS, 0.8),
                 (DEIMOS_DIR, DEIMOS_RADIUS, 1.0),
             ] {
+                // Moons keep the on-screen look they had as raw texels.
                 if let Some(lit) = moon(dir, center, radius, squash, sun) {
-                    color = lit;
+                    color = shown(lit);
                 }
             }
-            let c = color.clamp(glam::Vec3::ZERO, glam::Vec3::splat(255.0));
-            pixels.push([c.x as u8, c.y as u8, c.z as u8, 255]);
+            pixels.push(texel(
+                color.clamp(glam::Vec3::ZERO, glam::Vec3::splat(255.0)),
+            ));
         }
     }
     pixels
@@ -136,6 +172,17 @@ mod tests {
             "warm butterscotch {near:?}"
         );
         assert!(far[0] < near[0] / 2, "anti-sun stays dusky {far:?}");
+    }
+
+    #[test]
+    fn stops_land_on_screen_as_baked() {
+        // Every stop sits inside the sky pass's displayable range, so the
+        // inverse bake round-trips to within a byte of its sRGB target.
+        for stop in [FAR, MID, NEAR] {
+            let t = texel(stop);
+            let back = shown(glam::Vec3::new(t[0] as f32, t[1] as f32, t[2] as f32));
+            assert!((back - stop).abs().max_element() < 2.0, "{stop} -> {back}");
+        }
     }
 
     #[test]
