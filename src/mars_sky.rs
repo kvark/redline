@@ -18,10 +18,11 @@ const DEIMOS_RADIUS: f32 = SUN_CORE * 0.15;
 pub const PHOBOS_DIR: glam::Vec3 = glam::Vec3::new(0.844, 0.03, -0.535);
 pub const DEIMOS_DIR: glam::Vec3 = glam::Vec3::new(0.643, 0.503, -0.577);
 
-/// Sky stops: anti-sun mauve, mid rose, butterscotch around the sun.
-const FAR: glam::Vec3 = glam::Vec3::new(72.0, 38.0, 32.0);
-const MID: glam::Vec3 = glam::Vec3::new(160.0, 98.0, 76.0);
-const NEAR: glam::Vec3 = glam::Vec3::new(206.0, 148.0, 94.0);
+/// Sky stops: anti-sun dusty rose, mid apricot, bright butterscotch around
+/// the sun (pushed toward a Red Canyon midday).
+const FAR: glam::Vec3 = glam::Vec3::new(112.0, 64.0, 50.0);
+const MID: glam::Vec3 = glam::Vec3::new(204.0, 136.0, 88.0);
+const NEAR: glam::Vec3 = glam::Vec3::new(240.0, 184.0, 108.0);
 
 /// Inverse of Blade's raster `map_equirect_dir_to_uv`.
 fn texel_dir(x: u32, y: u32, width: u32, height: u32) -> glam::Vec3 {
@@ -73,8 +74,9 @@ pub fn sky(width: u32, height: u32) -> Vec<[u8; 4]> {
         for x in 0..width {
             let dir = texel_dir(x, y, width, height);
             let t = (dir.dot(sun) + 1.0) * 0.5;
+            // A wide butterscotch band: the mid stop arrives early.
             let mut color = if t < 0.6 {
-                FAR.lerp(MID, (t / 0.6).powf(1.4))
+                FAR.lerp(MID, (t / 0.6).powf(0.9))
             } else {
                 MID.lerp(NEAR, ((t - 0.6) / 0.4).powf(0.8))
             };

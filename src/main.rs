@@ -34,6 +34,7 @@ mod ghost;
 mod glb;
 mod lap_callout;
 mod launch;
+mod livery;
 mod mars_sky;
 mod menu;
 mod planet;

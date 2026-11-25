@@ -23,6 +23,7 @@ use crate::gate_pylons;
 use crate::ghost;
 use crate::lap_callout;
 use crate::launch;
+use crate::livery;
 use crate::mars_sky;
 use crate::menu;
 use crate::planet;
@@ -229,7 +230,14 @@ impl Game {
             ron::de::from_bytes(&read_asset_bytes(&assets.join("vehicle.ron")))
                 .expect("unable to parse vehicle config");
         let menu_vehicle = menu::VehicleId::default();
-        let vehicle = vehicle::spawn(&mut engine, &veh_config, spawn.clone(), menu_vehicle.kit());
+        let livery = livery_model(&veh_config, menu_vehicle.kit(), 0);
+        let vehicle = vehicle::spawn(
+            &mut engine,
+            &veh_config,
+            spawn.clone(),
+            menu_vehicle.kit(),
+            livery,
+        );
         let clear_ai = cli.script.is_some_and(|script| script.clears_ai());
         let ai_drivers = if clear_ai {
             Vec::new()
@@ -403,6 +411,7 @@ impl Game {
             &self.veh_config,
             self.spawn.clone(),
             self.menu_vehicle.kit(),
+            livery_model(&self.veh_config, self.menu_vehicle.kit(), 0),
         );
         let clear_ai = self.script.is_some_and(|script| script.clears_ai());
         if !clear_ai {
@@ -1522,6 +1531,18 @@ fn read_asset_bytes(path: &std::path::Path) -> Vec<u8> {
     fs::read(path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()))
 }
 
+/// Racer `racer`'s team livery on its body (None keeps the stock paint).
+fn livery_model(
+    veh_config: &config::Vehicle,
+    kit: Option<vehicle::Kit>,
+    racer: usize,
+) -> Option<String> {
+    let body = kit.map_or(veh_config.body.visual.model.as_str(), |kit| kit.body_model);
+    let read =
+        |path: &std::path::Path| blade_engine::vfs::read(path).or_else(|| fs::read(path).ok());
+    livery::model(&assets_dir(), body, racer, &read)
+}
+
 fn relative_model(assets: &std::path::Path, model: &std::path::Path) -> String {
     model
         .strip_prefix(assets)
@@ -1551,8 +1572,15 @@ fn spawn_ai_drivers(
         .copied()
         .enumerate()
         .map(|(slot, spec)| {
+            let livery = livery_model(veh_config, Some(spec.kit), slot + 1);
             ai::Driver::spawn(
-                engine, veh_config, track, spec.index, spec.lane, spec.speed, spec.kit,
+                engine,
+                veh_config,
+                track,
+                spec.index,
+                spec.lane,
+                spec.speed,
+                (spec.kit, livery),
             )
             .with_id(slot + 1)
         })
@@ -1587,6 +1615,7 @@ fn populate_world(
 
     let mut world_handles = Vec::new();
     let planet_rel = relative_model(assets, &planet.planet_model);
+    let collider_rel = relative_model(assets, &planet.collider_model);
     let planet_object = blade_engine::config::Object {
         name: "mars".to_string(),
         visuals: vec![blade_engine::config::Visual {
@@ -1598,7 +1627,7 @@ fn populate_world(
             friction: 0.85,
             restitution: 0.02,
             shape: blade_engine::config::Shape::TriMesh {
-                model: planet_rel,
+                model: collider_rel,
                 convex: false,
                 border_radius: 0.0,
             },

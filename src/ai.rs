@@ -77,7 +77,7 @@ impl Driver {
         track_index: usize,
         lateral_offset: f32,
         target_speed: f32,
-        kit: vehicle::Kit,
+        (kit, livery): (vehicle::Kit, Option<String>),
     ) -> Self {
         let pose = vehicle::Vehicle::spawn_pose_at(
             track,
@@ -85,7 +85,7 @@ impl Driver {
             vehicle::SPAWN_HOVER,
             lateral_offset,
         );
-        let vehicle = vehicle::spawn(engine, config, pose, Some(kit));
+        let vehicle = vehicle::spawn(engine, config, pose, Some(kit), livery);
         Self {
             vehicle,
             // Same default race config as the player (shared checkpoint grid).
