@@ -7,10 +7,10 @@ license = "MIT"
 description = "Race around a procedurally generated planet"
 
 [dependencies]
-blade-engine = { git = "https://github.com/kvark/blade", rev = "33e2a5b003009acb1329a11207053f2f564db310" }
-blade-graphics = { git = "https://github.com/kvark/blade", rev = "33e2a5b003009acb1329a11207053f2f564db310" }
-blade-particle = { git = "https://github.com/kvark/blade", rev = "33e2a5b003009acb1329a11207053f2f564db310" }
-blade-render = { git = "https://github.com/kvark/blade", rev = "33e2a5b003009acb1329a11207053f2f564db310" }
+blade-engine = { git = "https://github.com/kvark/blade", rev = "9e563d7b6251c07ab8f3c01fa1c50833fba895ee" }
+blade-graphics = { git = "https://github.com/kvark/blade", rev = "9e563d7b6251c07ab8f3c01fa1c50833fba895ee" }
+blade-particle = { git = "https://github.com/kvark/blade", rev = "9e563d7b6251c07ab8f3c01fa1c50833fba895ee" }
+blade-render = { git = "https://github.com/kvark/blade", rev = "9e563d7b6251c07ab8f3c01fa1c50833fba895ee" }
 egui = "0.34"
 egui-winit = { version = "0.34", default-features = false, features = [
     "links",

@@ -65,6 +65,9 @@ pub struct Kit {
 
 /// Baseline wheel-spin motor max force when no kit overrides it.
 pub const BASE_MOTOR_MAX_FORCE: f32 = 240.0;
+/// Wheel spin target over the commanded speed. Rapier 0.36 wheel motors are
+/// softer and settle below their target, so they aim a bit past it.
+const WHEEL_OVERDRIVE: f32 = 1.2;
 
 /// Lateral grip multiplier while firmly on the ribbon (`off_track <= 0`).
 pub const RIBBON_GRIP_BONUS: f32 = 1.42;
@@ -449,7 +452,7 @@ impl Vehicle {
         // locked axle on the sphere cannot inject a heading change.
         let wheel_yaw = desired_yaw - yaw_rate * 1.2 * hold;
         for wheel in self.wheels.iter() {
-            let wheel_speed = target_speed + wheel_yaw * wheel.lateral;
+            let wheel_speed = target_speed * WHEEL_OVERDRIVE + wheel_yaw * wheel.lateral;
             engine.set_joint_motor(
                 wheel.spin_joint,
                 blade_engine::JointAxis::AngularX,
