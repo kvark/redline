@@ -172,7 +172,9 @@ impl Game {
                 shader_path: blade_render::shader_dir().to_string_lossy().into_owned(),
                 data_path: assets.to_string_lossy().into_owned(),
                 cache_path: "asset-cache".to_string(),
-                time_step: 0.01,
+                // Rapier 0.36 caps body spin at π/4 per step. At 100 Hz that held the
+                // 0.3 m wheels near 23.5 m/s; 125 Hz lifts the cap to about 29 m/s.
+                time_step: 0.008,
                 render_backend: if ray_trace {
                     blade_engine::config::RenderBackend::RayTracer
                 } else {
