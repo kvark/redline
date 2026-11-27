@@ -49,6 +49,37 @@ pub struct Pad {
 }
 
 impl Pad {
+    /// Intersect a continuous chassis step against the pad's oriented trigger volume.
+    /// Returns the normalized time of first contact, or None if it missed.
+    fn entry_along(&self, start: glam::Vec3, end: glam::Vec3) -> Option<f32> {
+        let start = start - self.position;
+        let delta = end - self.position - start;
+        let mut enter: f32 = 0.0;
+        let mut leave: f32 = 1.0;
+        for (axis, low, high) in [
+            (self.tangent, -PAD_HALF_LENGTH, PAD_HALF_LENGTH),
+            (self.side, -self.half_width, self.half_width),
+            (self.normal, -1.0, PAD_TRIGGER_HEIGHT),
+        ] {
+            let origin = start.dot(axis);
+            let span = delta.dot(axis);
+            if span.abs() < 1e-6 {
+                if !(low..=high).contains(&origin) {
+                    return None;
+                }
+                continue;
+            }
+            let a = (low - origin) / span;
+            let b = (high - origin) / span;
+            enter = enter.max(a.min(b));
+            leave = leave.min(a.max(b));
+            if enter > leave {
+                return None;
+            }
+        }
+        Some(enter)
+    }
+
     pub fn contains(&self, position: glam::Vec3) -> bool {
         let delta = position - self.position;
         let reach = PAD_HALF_LENGTH + self.half_width + PAD_TRIGGER_HEIGHT;
@@ -156,6 +187,7 @@ pub struct PadBoost {
     cooldown: f32,
     /// Pad currently under the craft; a pad fires on entry, not while parked on it.
     inside: Option<usize>,
+    previous: Option<glam::Vec3>,
     hits: u32,
 }
 
@@ -164,15 +196,21 @@ impl PadBoost {
     pub fn tick(&mut self, pads: &[Pad], position: glam::Vec3, dt: f32) -> f32 {
         self.cooldown = (self.cooldown - dt).max(0.0);
         let under = pad_under(pads, position);
-        if let Some(index) = under
-            && self.inside != Some(index)
-            && self.cooldown <= 0.0
+        if self.cooldown <= 0.0
+            && pads.iter().enumerate().any(|(index, pad)| {
+                self.inside != Some(index)
+                    && match self.previous {
+                        Some(previous) => pad.entry_along(previous, position).is_some(),
+                        None => under == Some(index),
+                    }
+            })
         {
             self.timer = PAD_BOOST_SECS;
             self.cooldown = PAD_COOLDOWN_SECS;
             self.hits += 1;
         }
         self.inside = under;
+        self.previous = Some(position);
         if self.timer > 0.0 {
             let intensity = (self.timer / PAD_BOOST_SECS).clamp(0.0, 1.0);
             self.timer = (self.timer - dt).max(0.0);
@@ -191,11 +229,12 @@ impl PadBoost {
         *self = Self::default();
     }
 
-    /// Keep the hit count (race stats) but drop any live thrust.
+    /// Keep the hit count (race stats) but discard thrust and the pre-respawn position.
     pub fn cancel(&mut self) {
         self.timer = 0.0;
         self.cooldown = 0.0;
         self.inside = None;
+        self.previous = None;
     }
 }
 
@@ -207,8 +246,8 @@ pub fn combine(ribbon: f32, pad: f32, ribbon_speed_bonus: f32, ribbon_accel: f32
     (speed.max(0.0), accel.max(0.0))
 }
 
-/// Bake every pad into one world-space GLB: a dark plate plus three glowing
-/// chevrons, draped on the ribbon height field.
+/// Bake original boost-pad art into a world-space GLB: dark plate, amber edge
+/// guides and cyan forward chevrons, draped on the ribbon height field.
 pub fn write_model(
     out_dir: &Path,
     pads: &[Pad],
@@ -224,8 +263,19 @@ pub fn write_model(
         let dir = p.normalize_or_zero();
         (dir * (planet::surface_height(dir, planet_cfg, &track_dirs) + lift)).into()
     };
+    let path = out_dir.join("boost-pads.glb");
+    glb::write_glb(&path, &pad_meshes(pads, &drape)).ok()?;
+    Some(path)
+}
+
+/// Shared layout for all circuits and both render targets.
+fn pad_meshes(
+    pads: &[Pad],
+    drape: &impl Fn(&Pad, f32, f32, f32) -> [f32; 3],
+) -> [glb::MeshData; 3] {
     let mut plate = QuadMesh::default();
     let mut chevrons = QuadMesh::default();
+    let mut rails = QuadMesh::default();
     for pad in pads.iter() {
         let w = pad.half_width;
         let l = PAD_HALF_LENGTH;
@@ -233,27 +283,40 @@ pub fn write_model(
         // sinking into it mid-pad.
         plate.patch(
             pad,
-            &drape,
+            drape,
             [[-w, -l], [w, -l], [w, l], [-w, l]],
             PLATE_LIFT,
             6,
         );
-        // Three forward-pointing chevrons, tips toward +tangent.
-        let arm = 0.42;
-        let rise = w * 0.55;
-        for k in 0..3 {
-            let base = -l + 0.55 + k as f32 * (2.0 * l - 1.1) / 3.0;
-            for sign in [-1.0f32, 1.0] {
-                let outer = w * 0.86 * sign;
-                // Arm from the outer foot (outer, base) to the tip (0, base + rise).
+        // Paired amber side rails bracket the active footprint. Two cyan rows
+        // run toward the exit; the gaps preserve the plate silhouette at speed.
+        for sign in [-1.0, 1.0] {
+            for (rear, front) in [(-0.92, -0.30), (0.18, 0.88)] {
+                let outer = w * 0.96 * sign;
+                let inner = w * 0.82 * sign;
+                rails.patch(
+                    pad,
+                    drape,
+                    [
+                        [outer, l * rear],
+                        [inner, l * rear],
+                        [inner, l * front],
+                        [outer, l * front],
+                    ],
+                    CHEVRON_LIFT,
+                    4,
+                );
+            }
+            for rear in [-0.74, 0.02] {
+                let outer = w * 0.66 * sign;
                 chevrons.patch(
                     pad,
-                    &drape,
+                    drape,
                     [
-                        [outer, base],
-                        [0.0, base + rise],
-                        [0.0, base + rise + arm],
-                        [outer, base + arm],
+                        [outer, l * rear],
+                        [0.0, l * (rear + 0.42)],
+                        [0.0, l * (rear + 0.65)],
+                        [outer, l * (rear + 0.23)],
                     ],
                     CHEVRON_LIFT,
                     4,
@@ -261,13 +324,11 @@ pub fn write_model(
             }
         }
     }
-    let path = out_dir.join("boost-pads.glb");
-    let meshes = [
+    [
         plate.finish("boost-plate", [0.02, 0.03, 0.05, 1.0], [0.01, 0.05, 0.09]),
         chevrons.finish("boost-chevrons", [0.05, 0.6, 0.8, 1.0], [0.25, 1.6, 2.4]),
-    ];
-    glb::write_glb(&path, &meshes).ok()?;
-    Some(path)
+        rails.finish("boost-rails", [0.8, 0.35, 0.06, 1.0], [1.7, 0.62, 0.08]),
+    ]
 }
 
 #[derive(Default)]
@@ -441,6 +502,69 @@ mod tests {
         assert_eq!(boost.hits(), 2);
         boost.reset();
         assert_eq!(boost.hits(), 0);
+    }
+
+    #[test]
+    fn fast_edge_crossing_scores_without_endpoint_overlap() {
+        let track = ring(256, 80.0);
+        let pad = place(&track, 16, 1, 14.0)[0];
+        let mid = pad.position + pad.normal * 0.8;
+        // Clip the far corner: both samples miss the footprint even at modest speed.
+        let previous =
+            mid + pad.tangent * (PAD_HALF_LENGTH - 0.3) + pad.side * (pad.half_width + 0.1);
+        let next = mid + pad.tangent * (PAD_HALF_LENGTH + 0.1) + pad.side * (pad.half_width - 0.3);
+        assert!(!pad.contains(previous));
+        assert!(!pad.contains(next));
+        let mut pulse = PadBoost::default();
+        assert_eq!(pulse.tick(&[pad], previous, 0.01), 0.0);
+        assert_eq!(pulse.tick(&[pad], next, 0.01), 1.0);
+        assert_eq!(pulse.hits(), 1);
+        pulse.tick(&[pad], next, 0.01);
+        assert_eq!(pulse.hits(), 1);
+    }
+
+    #[test]
+    fn sweeps_respect_height_and_respawn_breaks_the_path() {
+        let track = ring(256, 80.0);
+        let pad = place(&track, 16, 1, 14.0)[0];
+        let mid = pad.position + pad.normal * 0.8;
+        let offset = pad.tangent * (PAD_HALF_LENGTH + 0.5);
+        let above = pad.normal * PAD_TRIGGER_HEIGHT;
+        let mut pulse = PadBoost::default();
+        pulse.tick(&[pad], mid - offset + above, 0.01);
+        assert_eq!(pulse.tick(&[pad], mid + offset + above, 0.01), 0.0);
+        pulse.cancel();
+        pulse.tick(&[pad], mid - offset, 0.01);
+        pulse.cancel();
+        assert_eq!(pulse.tick(&[pad], mid + offset, 0.01), 0.0);
+        assert_eq!(pulse.hits(), 0);
+    }
+
+    #[test]
+    fn original_pad_art_stays_within_trigger_width_and_length() {
+        let track = ring(256, 80.0);
+        for width in [9.5, 14.0] {
+            let pad = place(&track, 16, 1, width)[0];
+            let meshes = pad_meshes(&[pad], &|pad, x, z, lift| {
+                (pad.side * x + pad.tangent * z + pad.normal * lift).into()
+            });
+            assert_eq!(
+                meshes.each_ref().map(|mesh| mesh.name.as_str()),
+                ["boost-plate", "boost-chevrons", "boost-rails"]
+            );
+            for mesh in meshes {
+                for p in &mesh.positions {
+                    let point = glam::Vec3::from(*p);
+                    assert!(point.dot(pad.side).abs() <= pad.half_width + 1e-5);
+                    assert!(point.dot(pad.tangent).abs() <= PAD_HALF_LENGTH + 1e-5);
+                }
+                for face in mesh.indices.chunks_exact(3) {
+                    let [a, b, c] = [face[0], face[1], face[2]]
+                        .map(|index| glam::Vec3::from(mesh.positions[index as usize]));
+                    assert!((b - a).cross(c - a).dot(pad.normal) > 0.0);
+                }
+            }
+        }
     }
 
     #[test]
