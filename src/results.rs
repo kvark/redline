@@ -1,7 +1,7 @@
 //! Brief post-FINISH championship results board: place, lap times, launch
 //! rating and the whole field with gaps to the winner.
 
-use crate::launch;
+use crate::{launch, race, split};
 
 /// How long the results board stays up before auto-returning to the menu.
 pub const RESULTS_HOLD_SECS: f32 = 6.0;
@@ -11,8 +11,8 @@ pub const RESULTS_HOLD_SECS: f32 = 6.0;
 pub struct Standing {
     /// Racer id: 0 is the player.
     pub racer: usize,
-    /// Seconds behind the winner (0 for the winner).
-    pub gap: f32,
+    /// Finish-clock gap, or the live split for a racer still on course.
+    pub gap: Option<f32>,
 }
 
 impl Standing {
@@ -29,9 +29,30 @@ impl Standing {
         if place == 1 {
             "WINNER".to_string()
         } else {
-            format!("+{:.1}s", self.gap)
+            self.gap
+                .map_or_else(|| "—".to_string(), |gap| format!("+{gap:.1}s"))
         }
     }
+}
+
+/// Classify every racer from the same physics tick, not from the split timer's
+/// distance order. Stable order breaks exact ties by grid id.
+pub fn classify(field: &[(&race::Race, f32)], timer: &split::GapTimer) -> Vec<Standing> {
+    let mut ids: Vec<_> = (0..field.len()).collect();
+    let score = |id: usize| field[id].0.progress_score(field[id].1);
+    ids.sort_by(|&a, &b| score(b).total_cmp(&score(a)));
+    let Some(&winner) = ids.first() else {
+        return Vec::new();
+    };
+    ids.into_iter()
+        .map(|racer| {
+            let gap = match (field[winner].0.finish_time(), field[racer].0.finish_time()) {
+                (Some(first), Some(time)) => Some((time - first).max(0.0)),
+                _ => timer.gap(winner, racer),
+            };
+            Standing { racer, gap }
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -79,15 +100,25 @@ impl RaceResults {
     }
 
     /// Player gap to the winner, or margin over P2 when the player won.
-    pub fn margin(&self) -> Option<crate::split::Split> {
+    pub fn margin(&self) -> Option<split::Split> {
         let player = self.standings.get(self.place.checked_sub(1)?)?;
         if self.place == 1 {
             self.standings
                 .get(1)
-                .map(|p2| crate::split::Split::Leading(p2.gap))
+                .and_then(|p2| p2.gap.map(split::Split::Leading))
         } else {
-            Some(crate::split::Split::Behind(player.gap))
+            player.gap.map(split::Split::Behind)
         }
+    }
+
+    pub fn championship_order(
+        &self,
+        best_lap: impl Fn(usize) -> Option<f32>,
+    ) -> Vec<(usize, Option<f32>)> {
+        self.standings
+            .iter()
+            .map(|row| (row.racer, best_lap(row.racer)))
+            .collect()
     }
 
     /// Advance by a physics step. Returns `true` when the board should clear.
@@ -120,7 +151,10 @@ mod tests {
     fn field_sets_place_and_margins() {
         let rows = |ids: &[(usize, f32)]| {
             ids.iter()
-                .map(|&(racer, gap)| Standing { racer, gap })
+                .map(|&(racer, gap)| Standing {
+                    racer,
+                    gap: Some(gap),
+                })
                 .collect::<Vec<_>>()
         };
         let board = RaceResults::new(1, 1, 60.0, None, None)

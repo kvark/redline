@@ -98,7 +98,7 @@ pub struct Game {
     pending_results: Option<results::RaceResults>,
     /// Grid launch ratings and pushes; None when the race had no lights.
     launch: Option<launch::Start>,
-    /// Live time gaps for the leader split and the results classification.
+    /// Live time gaps, also used for unfinished drivers on the results board.
     gap_timer: split::GapTimer,
     /// Races started this session; varies AI launches between rematches.
     race_seed: u32,
@@ -566,9 +566,7 @@ impl Game {
         let (pose, linear, angular, forward_speed, lateral_speed) =
             self.vehicle.motion(&self.engine);
         if !drive_locked {
-            if let Some(event) = self.race.update(pose.position, dt) {
-                self.on_race_event(event);
-            }
+            let event = self.race.update(pose.position, dt);
             for driver in self.ai_drivers.iter_mut() {
                 let ai_pose = driver.vehicle.pose(&self.engine);
                 let _ = driver.race.update(ai_pose.position, dt);
@@ -577,6 +575,9 @@ impl Game {
                 self.race_stats.record_recovery(false);
             }
             self.observe_race_stats(dt);
+            if let Some(event) = event {
+                self.on_race_event(event);
+            }
             self.tick_ghost(dt);
         }
         if self
@@ -1176,20 +1177,24 @@ impl Game {
     }
 
     fn capture_results(&self) -> results::RaceResults {
+        let track = &self.planet.track;
+        let field: Vec<_> = std::iter::once((&self.race, &self.vehicle))
+            .chain(self.ai_drivers.iter().map(|d| (&d.race, &d.vehicle)))
+            .map(|(race, vehicle)| {
+                let (_, frac) = planet::track_progress(vehicle.pose(&self.engine).position, track);
+                (race, frac)
+            })
+            .collect();
         results::RaceResults::new(
-            self.live_place(),
-            self.field_size(),
+            1,
+            field.len(),
             self.race.time,
             self.race.best_lap,
             self.race.last_lap_time,
         )
         .with_field(
             self.launch.as_ref().and_then(|s| s.ratings[0]),
-            self.gap_timer
-                .standings()
-                .into_iter()
-                .map(|(racer, gap)| results::Standing { racer, gap })
-                .collect(),
+            results::classify(&field, &self.gap_timer),
         )
     }
 
@@ -1199,15 +1204,10 @@ impl Game {
             0 => self.race.best_lap,
             id => self.ai_drivers.get(id - 1).and_then(|d| d.race.best_lap),
         };
-        let mut order: Vec<(usize, Option<f32>)> = self
-            .pending_results
-            .iter()
-            .flat_map(|board| board.standings.iter())
-            .map(|row| (row.racer, best_lap(row.racer)))
-            .collect();
-        if order.is_empty() {
-            order.push((0, best_lap(0)));
-        }
+        let Some(board) = self.pending_results.as_ref() else {
+            return;
+        };
+        let order = board.championship_order(best_lap);
         self.championship.record(&order);
         log::info!("{}", self.championship.summary());
     }
