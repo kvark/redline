@@ -23,6 +23,7 @@ pub struct Race {
     pub best_lap: Option<f32>,
     pub last_sector_time: Option<f32>,
     pub best_sector: Option<f32>,
+    grid_time: f32,
     lap_start: f32,
     sector_start: f32,
 }
@@ -52,6 +53,7 @@ impl Race {
             best_lap: None,
             last_sector_time: None,
             best_sector: None,
+            grid_time: 0.0,
             lap_start: 0.0,
             sector_start: 0.0,
         }
@@ -90,6 +92,7 @@ impl Race {
         if self.finished {
             return None;
         }
+        self.grid_time += dt;
         if self.started {
             self.time += dt;
         }
@@ -155,6 +158,7 @@ impl Race {
         self.started = false;
         self.finished = false;
         self.time = 0.0;
+        self.grid_time = 0.0;
         self.last_lap_time = None;
         self.best_lap = None;
         self.last_sector_time = None;
@@ -163,12 +167,17 @@ impl Race {
         self.sector_start = 0.0;
     }
 
+    /// Common grid clock, frozen on the tick this racer crossed the last gate.
+    pub fn finish_time(&self) -> Option<f32> {
+        self.finished.then_some(self.grid_time)
+    }
+
     /// Higher means further ahead. Finished racers beat anyone still racing;
     /// among finishers, earlier race time ranks higher.
     pub fn progress_score(&self, track_frac: f32) -> f64 {
-        if self.finished {
-            // Large base so finishers sort above the field; subtract time for order.
-            return 1_000_000.0 + (100_000.0 - self.time as f64);
+        if let Some(time) = self.finish_time() {
+            // Individual lap clocks can start on different ticks. Use the grid clock.
+            return 1_000_000.0 + (100_000.0 - time as f64);
         }
         let frac = track_frac.clamp(0.0, 0.999_999) as f64;
         (self.lap.saturating_sub(1) as f64) + frac
@@ -351,9 +360,11 @@ mod tests {
         let mut done_slow = Race::new(&samples, config::Race::default());
         let mut racing = Race::new(&samples, config::Race::default());
         done_fast.finished = true;
-        done_fast.time = 90.0;
+        done_fast.grid_time = 90.0;
+        done_fast.time = 85.0;
         done_slow.finished = true;
-        done_slow.time = 110.0;
+        done_slow.grid_time = 110.0;
+        done_slow.time = 80.0;
         racing.lap = 3;
         assert!(done_fast.progress_score(0.0) > racing.progress_score(0.99));
         assert!(done_fast.progress_score(0.0) > done_slow.progress_score(0.0));
@@ -363,6 +374,83 @@ mod tests {
                 [done_fast.progress_score(0.0), racing.progress_score(0.5)]
             ),
             2
+        );
+    }
+
+    #[test]
+    fn result_rows_and_points_follow_crossings_not_previous_splits() {
+        use crate::{championship, results, split};
+
+        let track = sample_track();
+        let cfg = config::Race {
+            laps: 1,
+            checkpoint_count: 8,
+        };
+        let mut player = Race::new(&track, cfg);
+        let mut earlier = Race::new(&track, cfg);
+        let mut trailing = Race::new(&track, cfg);
+        let line = player.checkpoints[0];
+        // Finish AI 1 on the previous tick. Its elapsed lap clock is longer
+        // than the player's because it began timing earlier.
+        player.grid_time = 60.0;
+        player.time = 55.0;
+        player.started = true;
+        player.next_checkpoint = 0;
+        earlier.grid_time = 60.0;
+        earlier.time = 58.0;
+        earlier.started = true;
+        earlier.next_checkpoint = 0;
+        assert!(matches!(
+            earlier.update(line, 0.01),
+            Some(RaceEvent::Finished { .. })
+        ));
+        assert!(player.update(-line, 0.01).is_none());
+        assert!(matches!(
+            player.update(line, 0.01),
+            Some(RaceEvent::Finished { .. })
+        ));
+        assert!(earlier.update(line, 0.01).is_none());
+        trailing.grid_time = 60.02;
+        assert!(player.time < earlier.time);
+
+        // The odometer says AI 2 is furthest (for instance after continuing
+        // down the ribbon). Its distance must not determine the awards.
+        let mut splits = split::GapTimer::default();
+        splits.observe(&[300.0, 306.0, 310.0], 0.01);
+        assert_eq!(splits.order(), vec![2, 1, 0]);
+        let board =
+            results::RaceResults::new(1, 3, player.time, player.best_lap, player.last_lap_time)
+                .with_field(
+                    None,
+                    results::classify(
+                        &[(&player, 0.0), (&earlier, 0.05), (&trailing, 0.99)],
+                        &splits,
+                    ),
+                );
+        assert_eq!(board.place, 2);
+        assert_eq!(
+            board
+                .standings
+                .iter()
+                .map(|row| row.racer)
+                .collect::<Vec<_>>(),
+            vec![1, 0, 2]
+        );
+        assert!((board.standings[1].gap.unwrap() - 0.01).abs() < 1e-5);
+        assert_eq!(board.standings[2].gap_text(3), "—");
+        let mut standings = championship::Standings::new("test");
+        assert_eq!(
+            standings.record(&board.championship_order(|_| None)),
+            vec![(1, 10), (0, 6), (2, 4)]
+        );
+        assert_eq!(
+            standings
+                .entries
+                .iter()
+                .find(|e| e.racer == 0)
+                .unwrap()
+                .best_finish,
+            board.place
         );
     }
 

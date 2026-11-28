@@ -87,18 +87,6 @@ impl GapTimer {
             self.gap(leader, racer).map(Split::Behind)
         }
     }
-
-    /// Each racer from leader to last, with its gap to the leader.
-    pub fn standings(&self) -> Vec<(usize, f32)> {
-        let order = self.order();
-        let Some(&leader) = order.first() else {
-            return Vec::new();
-        };
-        order
-            .iter()
-            .map(|&id| (id, self.gap(leader, id).unwrap_or(0.0)))
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -142,9 +130,6 @@ mod tests {
         assert!((behind - 1.0).abs() < 0.03);
         assert_eq!(Split::Behind(0.84).text(), "+0.8s");
         assert_eq!(Split::Leading(1.25).text(), "-1.2s");
-        let standings = timer.standings();
-        assert_eq!(standings[0], (0, 0.0));
-        assert_eq!(standings[1].0, 1);
     }
 
     #[test]
